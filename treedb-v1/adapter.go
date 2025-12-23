@@ -92,10 +92,10 @@ func (d *TreeDBAdapter) Get(key []byte) ([]byte, error) {
 	if value == nil {
 		return nil, nil
 	}
-	// Always return a copy; TreeDB may return views into mmaped pages.
-	out := make([]byte, len(value))
-	copy(out, value)
-	return out, nil
+	// TreeDB may return a read-only view into mmaped pages/slabs; iavl's DB
+	// contract treats returned bytes as read-only, so returning the view avoids
+	// a high allocation rate from per-Get copying.
+	return value, nil
 }
 
 func (d *TreeDBAdapter) Has(key []byte) (bool, error) {

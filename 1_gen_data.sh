@@ -6,7 +6,7 @@ VERSIONS=${1:-50}
 SCALE=${2:-0.05}
 
 echo "Generating changesets with VERSIONS=$VERSIONS and SCALE=$SCALE..."
-echo "Bench backends: treedb, iavl/v1 (leveldb), iavl/v1-memdb"
+echo "Bench backends: treedb (iavl v0), treedb-v1 (iavl v1), iavl/v1 (leveldb), iavl/v1-memdb"
 
 # Cleanup
 echo "Cleaning up old changesets..."

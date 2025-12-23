@@ -2,15 +2,13 @@ module github.com/cosmos/iavl-bench/treedb
 
 go 1.25.5
 
-replace github.com/snissn/gomap => /Users/michaelseiler/dev/snissn/gomap-cleanup
-
 replace github.com/cosmos/iavl-bench/bench => ../bench
 
 require (
 	github.com/cosmos/cosmos-db v0.0.0-20220822060143-23a8145386c0
 	github.com/cosmos/iavl v0.21.1
 	github.com/cosmos/iavl-bench/bench v0.0.0-00010101000000-000000000000
-	github.com/snissn/gomap v0.0.0-00010101000000-000000000000
+	github.com/snissn/gomap v0.0.0-20251223045635-2782394dac2e
 )
 
 require (

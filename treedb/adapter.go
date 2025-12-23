@@ -32,9 +32,9 @@ func NewTreeDBAdapter(dir string, name string) (*TreeDBAdapter, error) {
 		MemtableMode: memtableMode,
 
 		// --- "Unsafe" Performance Options ---
-		DisableWAL:          true,
-		RelaxedSync:         true,
-		DisableReadChecksum: true,
+		DisableWAL:          false,
+		RelaxedSync:         false,
+		DisableReadChecksum: false,
 
 		// --- Tuning for High-Throughput & Large Values ---
 		FlushThreshold:        64 * 1024 * 1024,

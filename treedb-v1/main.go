@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	dbm "github.com/cosmos/cosmos-db"
+	"cosmossdk.io/log"
 	"github.com/cosmos/iavl"
 	"github.com/cosmos/iavl-bench/bench"
 	"github.com/cosmos/iavl-bench/bench/util"
@@ -21,14 +21,18 @@ const (
 	envDiagEvery   = "TREEDB_BENCH_LOG_DIAG_EVERY"
 )
 
+type Options struct {
+	SkipFastStorageUpgrade bool `json:"skip_fast_storage_upgrade"`
+	CacheSize              int  `json:"cache_size"`
+}
+
 // MultiTreeWrapper wraps multiple IAVL trees sharing a single DB backend.
-// This mirrors the original iavl-v0 benchmark structure, but uses TreeDB as the
-// backing DB implementation (via cosmos-db).
+// This is identical to the logic in iavl-v0/main.go but uses TreeDBAdapter.
 type MultiTreeWrapper struct {
 	dbDir   string
 	version int64
 	trees   map[string]*iavl.MutableTree
-	dbs     map[string]dbm.DB
+	dbs     map[string]*TreeDBAdapter
 
 	logger      *slog.Logger
 	diagEnabled bool
@@ -56,23 +60,23 @@ func (m *MultiTreeWrapper) ApplyUpdate(storeKey string, key, value []byte, delet
 	if delete {
 		_, _, err := tree.Remove(key)
 		return err
+	} else {
+		_, err := tree.Set(key, value)
+		return err
 	}
-	_, err := tree.Set(key, value)
-	return err
 }
 
 func (m *MultiTreeWrapper) Commit() error {
 	for _, tree := range m.trees {
-		if _, _, err := tree.SaveVersion(); err != nil {
+		_, _, err := tree.SaveVersion()
+		if err != nil {
 			return err
 		}
 	}
 
 	for _, d := range m.dbs {
-		if tdb, ok := d.(*TreeDBAdapter); ok {
-			if err := tdb.Checkpoint(); err != nil {
-				return fmt.Errorf("error checkpointing treedb: %w", err)
-			}
+		if err := d.Checkpoint(); err != nil {
+			return fmt.Errorf("error checkpointing treedb: %w", err)
 		}
 	}
 
@@ -91,37 +95,46 @@ func (m *MultiTreeWrapper) Commit() error {
 var _ bench.Tree = &MultiTreeWrapper{}
 
 func main() {
-	bench.Run("iavl-treedb", bench.RunConfig{
+	bench.Run("iavl-treedb-v1", bench.RunConfig{
+		OptionsType: &Options{},
 		TreeLoader: func(params bench.LoaderParams) (bench.Tree, error) {
+			opts := params.TreeOptions.(*Options)
+			if opts == nil {
+				opts = &Options{}
+			}
+
 			dbDir := params.TreeDir
 			version, err := util.LoadVersion(dbDir)
 			if err != nil {
 				return nil, err
 			}
-
 			trees := make(map[string]*iavl.MutableTree)
-			dbs := make(map[string]dbm.DB)
+			dbs := make(map[string]*TreeDBAdapter)
 			diagEnabled, diagEvery := loadDiagConfig()
 
+			// Initialize our TreeDB Adapter
+			// NOTE: In iavl-v0, they create a new DB for EACH store name using NewGoLevelDBWithOpts.
+			// This means they are creating separate LevelDB instances (folders) for "storeA", "storeB".
+			// We should mimic this behavior.
+
+			logger := log.NewNopLogger()
 			for _, storeName := range params.StoreNames {
+				// Create the DB adapter for this specific store
 				d, err := NewTreeDBAdapter(dbDir, storeName)
 				if err != nil {
 					return nil, fmt.Errorf("error creating treedb for %s: %w", storeName, err)
 				}
 				dbs[storeName] = d
 
-				tree, err := iavl.NewMutableTree(d, 10_000, true)
-				if err != nil {
-					return nil, fmt.Errorf("error creating store %s: %w", storeName, err)
-				}
+				tree := iavl.NewMutableTree(d, opts.CacheSize, opts.SkipFastStorageUpgrade, logger)
 				if version != 0 {
-					if _, err := tree.LoadVersion(version); err != nil {
+					_, err := tree.LoadVersion(version)
+					if err != nil {
 						return nil, fmt.Errorf("loading store %s at version %d: %w", storeName, version, err)
 					}
 				}
 				trees[storeName] = tree
 			}
-
 			return &MultiTreeWrapper{
 				trees:   trees,
 				dbs:     dbs,
@@ -153,13 +166,8 @@ func loadDiagConfig() (enabled bool, every int64) {
 
 func (m *MultiTreeWrapper) writeDiagReports(version int64) {
 	for storeName, d := range m.dbs {
-		tdb, ok := d.(*TreeDBAdapter)
-		if !ok {
-			continue
-		}
-
-		stats := tdb.Stats()
-		frag, fragErr := tdb.FragmentationReport()
+		stats := d.Stats()
+		frag, fragErr := d.FragmentationReport()
 
 		dbPath := filepath.Join(m.dbDir, storeName)
 		path := filepath.Join(dbPath, fmt.Sprintf("bench-diag-v%05d.txt", version))

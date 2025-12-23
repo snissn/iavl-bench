@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"time"
 
-	dbm "github.com/cosmos/cosmos-db"
+	corestore "cosmossdk.io/core/store"
 	treedb "github.com/snissn/gomap/TreeDB"
 	"github.com/snissn/gomap/kvstore"
 	treedbadapter "github.com/snissn/gomap/kvstore/adapters/treedb"
@@ -14,10 +14,30 @@ import (
 
 const memtableMode = "adaptive"
 
-// TreeDBAdapter adapts a TreeDB instance to the cosmos-db interface (used by IAVL v0.21.x).
+// TreeDBAdapter adapts TreeDB to the IAVL v1 db.DB interface.
 type TreeDBAdapter struct {
 	db *treedb.DB
 	kv *treedbadapter.DB
+}
+
+type keyArena struct {
+	buf []byte
+}
+
+func newKeyArena(capacity int) keyArena {
+	if capacity <= 0 {
+		capacity = 64 * 1024
+	}
+	return keyArena{buf: make([]byte, 0, capacity)}
+}
+
+func (a *keyArena) Copy(key []byte) ([]byte, bool) {
+	if len(key) > cap(a.buf)-len(a.buf) {
+		return nil, false
+	}
+	off := len(a.buf)
+	a.buf = append(a.buf, key...)
+	return a.buf[off : off+len(key)], true
 }
 
 func NewTreeDBAdapter(dir string, name string) (*TreeDBAdapter, error) {
@@ -85,32 +105,7 @@ func (d *TreeDBAdapter) Has(key []byte) (bool, error) {
 	return d.kv.Has(key)
 }
 
-func (d *TreeDBAdapter) Set(key, value []byte) error {
-	if d.kv == nil {
-		return treedb.ErrClosed
-	}
-	if value == nil {
-		value = []byte{}
-	}
-	return d.kv.Set(key, value)
-}
-
-func (d *TreeDBAdapter) SetSync(key, value []byte) error {
-	return d.Set(key, value)
-}
-
-func (d *TreeDBAdapter) Delete(key []byte) error {
-	if d.kv == nil {
-		return treedb.ErrClosed
-	}
-	return d.kv.Delete(key)
-}
-
-func (d *TreeDBAdapter) DeleteSync(key []byte) error {
-	return d.Delete(key)
-}
-
-func (d *TreeDBAdapter) Iterator(start, end []byte) (dbm.Iterator, error) {
+func (d *TreeDBAdapter) Iterator(start, end []byte) (corestore.Iterator, error) {
 	if d.kv == nil {
 		return nil, treedb.ErrClosed
 	}
@@ -118,10 +113,10 @@ func (d *TreeDBAdapter) Iterator(start, end []byte) (dbm.Iterator, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &treeDBIterator{iter: it, start: start, end: end}, nil
+	return &coreIterator{iter: it, start: start, end: end}, nil
 }
 
-func (d *TreeDBAdapter) ReverseIterator(start, end []byte) (dbm.Iterator, error) {
+func (d *TreeDBAdapter) ReverseIterator(start, end []byte) (corestore.Iterator, error) {
 	if d.kv == nil {
 		return nil, treedb.ErrClosed
 	}
@@ -129,7 +124,7 @@ func (d *TreeDBAdapter) ReverseIterator(start, end []byte) (dbm.Iterator, error)
 	if err != nil {
 		return nil, err
 	}
-	return &treeDBIterator{iter: it, start: start, end: end}, nil
+	return &coreIterator{iter: it, start: start, end: end}, nil
 }
 
 func (d *TreeDBAdapter) Close() error {
@@ -142,15 +137,15 @@ func (d *TreeDBAdapter) Close() error {
 	return err
 }
 
-func (d *TreeDBAdapter) NewBatch() dbm.Batch {
+func (d *TreeDBAdapter) NewBatch() corestore.Batch {
 	return d.NewBatchWithSize(16)
 }
 
-func (d *TreeDBAdapter) NewBatchWithSize(size int) dbm.Batch {
+func (d *TreeDBAdapter) NewBatchWithSize(size int) corestore.Batch {
 	if size <= 0 {
 		size = 16
 	}
-	b := &treeDBBatch{db: d}
+	b := &coreBatch{db: d}
 	if d.kv != nil {
 		kb, err := d.kv.NewBatch()
 		if err == nil {
@@ -160,20 +155,18 @@ func (d *TreeDBAdapter) NewBatchWithSize(size int) dbm.Batch {
 	return b
 }
 
-func (d *TreeDBAdapter) Print() error { return nil }
+func (d *TreeDBAdapter) Checkpoint() error {
+	if d.kv == nil {
+		return treedb.ErrClosed
+	}
+	return d.kv.Checkpoint()
+}
 
 func (d *TreeDBAdapter) Stats() map[string]string {
 	if d.kv == nil {
 		return nil
 	}
 	return d.kv.Stats()
-}
-
-func (d *TreeDBAdapter) Checkpoint() error {
-	if d.kv == nil {
-		return treedb.ErrClosed
-	}
-	return d.kv.Checkpoint()
 }
 
 func (d *TreeDBAdapter) FragmentationReport() (map[string]string, error) {
@@ -183,30 +176,39 @@ func (d *TreeDBAdapter) FragmentationReport() (map[string]string, error) {
 	return d.db.FragmentationReport()
 }
 
-type treeDBBatch struct {
+type coreBatch struct {
 	db   *TreeDBAdapter
 	kb   kvstore.Batch
+	size int
 	done bool
 }
 
-func (b *treeDBBatch) Set(key, value []byte) error {
+func (b *coreBatch) Set(key, value []byte) error {
 	if b.done || b.kb == nil {
 		return treedb.ErrClosed
 	}
 	if value == nil {
 		value = []byte{}
 	}
-	return b.kb.Set(key, value)
+	if err := b.kb.Set(key, value); err != nil {
+		return err
+	}
+	b.size += len(key) + len(value)
+	return nil
 }
 
-func (b *treeDBBatch) Delete(key []byte) error {
+func (b *coreBatch) Delete(key []byte) error {
 	if b.done || b.kb == nil {
 		return treedb.ErrClosed
 	}
-	return b.kb.Delete(key)
+	if err := b.kb.Delete(key); err != nil {
+		return err
+	}
+	b.size += len(key)
+	return nil
 }
 
-func (b *treeDBBatch) Write() error {
+func (b *coreBatch) Write() error {
 	if b.done || b.kb == nil {
 		return treedb.ErrClosed
 	}
@@ -214,7 +216,7 @@ func (b *treeDBBatch) Write() error {
 	return b.kb.Commit()
 }
 
-func (b *treeDBBatch) WriteSync() error {
+func (b *coreBatch) WriteSync() error {
 	if b.done || b.kb == nil {
 		return treedb.ErrClosed
 	}
@@ -222,7 +224,7 @@ func (b *treeDBBatch) WriteSync() error {
 	return b.kb.CommitSync()
 }
 
-func (b *treeDBBatch) Close() error {
+func (b *coreBatch) Close() error {
 	if b.kb == nil {
 		b.done = true
 		return nil
@@ -233,20 +235,53 @@ func (b *treeDBBatch) Close() error {
 	return err
 }
 
-type treeDBIterator struct {
+func (b *coreBatch) GetByteSize() (int, error) {
+	return b.size, nil
+}
+
+type coreIterator struct {
 	iter  kvstore.Iterator
 	start []byte
 	end   []byte
+
+	keyArena keyArena
+	valArena keyArena
 }
 
-func (it *treeDBIterator) Domain() (start, end []byte) { return it.start, it.end }
-func (it *treeDBIterator) Valid() bool                 { return it.iter.Valid() }
-func (it *treeDBIterator) Next()                       { it.iter.Next() }
-func (it *treeDBIterator) Key() []byte                 { return it.iter.Key() }
-func (it *treeDBIterator) Value() []byte               { return it.iter.Value() }
-func (it *treeDBIterator) Error() error                { return it.iter.Error() }
-func (it *treeDBIterator) Close() error                { return it.iter.Close() }
+func (it *coreIterator) Domain() (start, end []byte) { return it.start, it.end }
+func (it *coreIterator) Valid() bool                 { return it.iter.Valid() }
+func (it *coreIterator) Next()                       { it.iter.Next() }
 
-var _ dbm.DB = (*TreeDBAdapter)(nil)
-var _ dbm.Batch = (*treeDBBatch)(nil)
-var _ dbm.Iterator = (*treeDBIterator)(nil)
+func (it *coreIterator) Key() []byte {
+	if it.keyArena.buf == nil {
+		it.keyArena = newKeyArena(64 * 1024)
+	}
+	key := it.iter.Key()
+	out, ok := it.keyArena.Copy(key)
+	if ok {
+		return out
+	}
+	out = make([]byte, len(key))
+	copy(out, key)
+	return out
+}
+
+func (it *coreIterator) Value() []byte {
+	if it.valArena.buf == nil {
+		it.valArena = newKeyArena(256 * 1024)
+	}
+	val := it.iter.Value()
+	out, ok := it.valArena.Copy(val)
+	if ok {
+		return out
+	}
+	out = make([]byte, len(val))
+	copy(out, val)
+	return out
+}
+
+func (it *coreIterator) Error() error { return it.iter.Error() }
+func (it *coreIterator) Close() error { return it.iter.Close() }
+
+var _ corestore.Batch = (*coreBatch)(nil)
+var _ corestore.Iterator = (*coreIterator)(nil)

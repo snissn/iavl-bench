@@ -74,11 +74,16 @@ func (m *MultiTreeWrapper) Commit() error {
 		}
 	}
 
-	for _, d := range m.dbs {
-		if err := d.Checkpoint(); err != nil {
-			return fmt.Errorf("error checkpointing treedb: %w", err)
+	/*
+
+		TODO confirm safe?
+
+		for _, d := range m.dbs {
+			if err := d.Checkpoint(); err != nil {
+				return fmt.Errorf("error checkpointing treedb: %w", err)
+			}
 		}
-	}
+	*/
 
 	m.version++
 

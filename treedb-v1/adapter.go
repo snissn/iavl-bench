@@ -52,7 +52,7 @@ func NewTreeDBAdapter(dir string, name string) (*TreeDBAdapter, error) {
 		MemtableMode: memtableMode,
 
 		// --- "Unsafe" Performance Options ---
-		DisableWAL:          true,
+		DisableWAL:          false,
 		RelaxedSync:         true,
 		DisableReadChecksum: true,
 

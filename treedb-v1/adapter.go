@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"time"
 
 	corestore "cosmossdk.io/core/store"
@@ -13,6 +15,11 @@ import (
 )
 
 const memtableMode = "adaptive"
+
+const (
+	envDisableWAL = "TREEDB_BENCH_DISABLE_WAL"
+	envDisableBG  = "TREEDB_BENCH_DISABLE_BG"
+)
 
 // TreeDBAdapter adapts TreeDB to the IAVL v1 db.DB interface.
 type TreeDBAdapter struct {
@@ -40,11 +47,35 @@ func (a *keyArena) Copy(key []byte) ([]byte, bool) {
 	return a.buf[off : off+len(key)], true
 }
 
+func envBool(name string, defaultValue bool) bool {
+	v, ok := os.LookupEnv(name)
+	if !ok {
+		return defaultValue
+	}
+	v = strings.TrimSpace(strings.ToLower(v))
+	if v == "" {
+		return true
+	}
+	switch v {
+	case "1", "true", "t", "yes", "y", "on":
+		return true
+	case "0", "false", "f", "no", "n", "off":
+		return false
+	}
+	if n, err := strconv.Atoi(v); err == nil {
+		return n != 0
+	}
+	return defaultValue
+}
+
 func NewTreeDBAdapter(dir string, name string) (*TreeDBAdapter, error) {
 	dbPath := filepath.Join(dir, name)
 	if err := os.MkdirAll(dbPath, 0755); err != nil {
 		return nil, fmt.Errorf("error creating treedb directory: %w", err)
 	}
+
+	disableWAL := envBool(envDisableWAL, false)
+	disableBG := envBool(envDisableBG, false)
 
 	openOpts := treedb.Options{
 		Dir:          dbPath,
@@ -52,7 +83,7 @@ func NewTreeDBAdapter(dir string, name string) (*TreeDBAdapter, error) {
 		MemtableMode: memtableMode,
 
 		// --- "Unsafe" Performance Options ---
-		DisableWAL:          false,
+		DisableWAL:          disableWAL,
 		RelaxedSync:         true,
 		DisableReadChecksum: true,
 
@@ -68,6 +99,15 @@ func NewTreeDBAdapter(dir string, name string) (*TreeDBAdapter, error) {
 		// Add Value Log Compaction
 		//BackgroundCompactionInterval:  1 * time.Second,
 		//BackgroundCompactionDeadRatio: 0.1,
+	}
+
+	if disableBG {
+		// Background tasks can dominate profile lock/wait time and obscure the
+		// hot path; disable them for tighter profiling loops.
+		openOpts.BackgroundIndexVacuumInterval = -1
+		openOpts.BackgroundCheckpointInterval = -1
+		openOpts.MaxWALBytes = -1
+		openOpts.BackgroundCheckpointIdleDuration = -1
 	}
 
 	tdb, err := treedb.Open(openOpts)

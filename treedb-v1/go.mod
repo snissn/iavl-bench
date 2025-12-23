@@ -9,7 +9,7 @@ require (
 	cosmossdk.io/log v1.6.1
 	github.com/cosmos/iavl v1.3.5
 	github.com/cosmos/iavl-bench/bench v0.0.0-00010101000000-000000000000
-	github.com/snissn/gomap v0.0.0-20251223154424-1447b302e411
+	github.com/snissn/gomap v0.0.0-20251223164644-2aa4da817a80
 )
 
 require (

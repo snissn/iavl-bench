@@ -4,6 +4,7 @@ go 1.23.0
 
 toolchain go1.24.2
 
+
 require (
 	cosmossdk.io/log v1.6.1
 	github.com/cosmos/iavl v1.3.5

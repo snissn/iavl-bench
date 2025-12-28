@@ -3,6 +3,7 @@ package bench
 import (
 	"bufio"
 	"bytes"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -22,7 +23,7 @@ import (
 	"github.com/shirou/gopsutil/v4/host"
 	"github.com/shirou/gopsutil/v4/mem"
 	"github.com/spf13/cobra"
-	"google.golang.org/protobuf/encoding/protodelim"
+	"google.golang.org/protobuf/proto"
 )
 
 // Tree is a generic interface wrapping a multi-store tree structure.
@@ -360,6 +361,41 @@ func captureSystemInfo(logger *slog.Logger) {
 	_, _ = cpu.Percent(0, true)
 }
 
+func readDelimitedKVPair(reader *bufio.Reader, kv *storev1beta1.StoreKVPair, buf *[]byte) error {
+	size, err := binary.ReadUvarint(reader)
+	if err != nil {
+		return err
+	}
+	maxInt := int(^uint(0) >> 1)
+	if size > uint64(maxInt) {
+		return fmt.Errorf("changeset entry too large: %d", size)
+	}
+	if size == 0 {
+		kv.StoreKey = ""
+		kv.Delete = false
+		kv.Key = kv.Key[:0]
+		kv.Value = kv.Value[:0]
+		return nil
+	}
+	b := *buf
+	if cap(b) < int(size) {
+		b = make([]byte, int(size))
+	} else {
+		b = b[:int(size)]
+	}
+	if _, err := io.ReadFull(reader, b); err != nil {
+		return err
+	}
+	kv.StoreKey = ""
+	kv.Delete = false
+	kv.Key = kv.Key[:0]
+	kv.Value = kv.Value[:0]
+	if err := (proto.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(b, kv); err != nil {
+		return err
+	}
+	*buf = b
+	return nil
+}
 func applyVersion(logger *slog.Logger, tree Tree, changesetDir string, version int64) error {
 	dataFilename := changesetDataFilename(changesetDir, version)
 	dataFile, err := os.Open(dataFilename)
@@ -377,12 +413,13 @@ func applyVersion(logger *slog.Logger, tree Tree, changesetDir string, version i
 	logger.Info("applying changeset", "version", version, "file", dataFilename)
 	i := 0
 	startTime := time.Now()
+	var buf []byte
 	for {
 		if i%10_000 == 0 && i > 0 {
 			logger.Debug("applied changes", "version", version, "count", i)
 		}
-		var storeKVPair storev1beta1.StoreKVPair
-		err := protodelim.UnmarshalFrom(reader, &storeKVPair)
+		storeKVPair := storev1beta1.StoreKVPair{}
+		err := readDelimitedKVPair(reader, &storeKVPair, &buf)
 		if err != nil {
 			if err == io.EOF {
 				break

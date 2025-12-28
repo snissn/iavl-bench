@@ -11,13 +11,13 @@ echo "Building benchmarks..."
 (cd iavl-v1 && go build -o iavl-v1-bench .)
 (cd iavl-v1-memdb && go build -o iavl-v1-memdb-bench .)
 
-echo "Running TreeDB (IAVL v0.21.x) Benchmark..."
-./treedb/treedb-v0-bench bench \
-    --db-dir ./data-treedb-v0 \
-    --changeset-dir ./changesets \
-    --log-file ./results/treedb-v0.jsonl \
-    --log-type json
-
+#echo "Running TreeDB (IAVL v0.21.x) Benchmark..."
+#./treedb/treedb-v0-bench bench \
+#    --db-dir ./data-treedb-v0 \
+#    --changeset-dir ./changesets \
+#    --log-file ./results/treedb-v0.jsonl \
+#    --log-type json
+#
 echo "Running TreeDB (IAVL v1) Benchmark..."
 ./treedb-v1/treedb-v1-bench bench \
     --db-dir ./data-treedb-v1 \

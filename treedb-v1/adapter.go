@@ -1,15 +1,18 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"time"
 
 	corestore "cosmossdk.io/core/store"
 	treedb "github.com/snissn/gomap/TreeDB"
+	"github.com/snissn/gomap/TreeDB/tree"
 	"github.com/snissn/gomap/kvstore"
 	treedbadapter "github.com/snissn/gomap/kvstore/adapters/treedb"
 )
@@ -17,14 +20,38 @@ import (
 const memtableMode = "adaptive"
 
 const (
-	envDisableWAL = "TREEDB_BENCH_DISABLE_WAL"
-	envDisableBG  = "TREEDB_BENCH_DISABLE_BG"
+	envDisableWAL          = "TREEDB_BENCH_DISABLE_WAL"
+	envDisableBG           = "TREEDB_BENCH_DISABLE_BG"
+	envRelaxedSync         = "TREEDB_BENCH_RELAXED_SYNC"
+	envDisableValueLog     = "TREEDB_BENCH_DISABLE_VALUE_LOG"
+	envDisableReadChecksum = "TREEDB_BENCH_DISABLE_READ_CHECKSUM"
+	envAllowUnsafe         = "TREEDB_BENCH_ALLOW_UNSAFE"
+	envMode                = "TREEDB_BENCH_MODE"
+	envPinSnapshot         = "TREEDB_BENCH_PIN_SNAPSHOT"
+	envReuseReads          = "TREEDB_BENCH_REUSE_READS"
 )
 
 // TreeDBAdapter adapts TreeDB to the IAVL v1 db.DB interface.
 type TreeDBAdapter struct {
-	db *treedb.DB
-	kv *treedbadapter.DB
+	db         *treedb.DB
+	kv         *treedbadapter.DB
+	snap       *treedb.Snapshot
+	reuseReads bool
+	readBuf    []byte
+}
+
+func (d *TreeDBAdapter) PinSnapshot() {
+	if d.snap != nil {
+		d.snap.Close()
+	}
+	d.snap = d.db.AcquireSnapshot()
+}
+
+func (d *TreeDBAdapter) UnpinSnapshot() {
+	if d.snap != nil {
+		d.snap.Close()
+		d.snap = nil
+	}
 }
 
 type keyArena struct {
@@ -68,6 +95,45 @@ func envBool(name string, defaultValue bool) bool {
 	return defaultValue
 }
 
+func envInt64(name string, defaultValue int64) int64 {
+	v, ok := os.LookupEnv(name)
+	if !ok {
+		return defaultValue
+	}
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return defaultValue
+	}
+	n, err := strconv.ParseInt(v, 10, 64)
+	if err != nil {
+		return defaultValue
+	}
+	return n
+}
+
+func envString(name string, defaultValue string) string {
+	v, ok := os.LookupEnv(name)
+	if !ok {
+		return defaultValue
+	}
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return defaultValue
+	}
+	return v
+}
+
+func setAllowUnsafe(opts *treedb.Options, allow bool) {
+	v := reflect.ValueOf(opts).Elem()
+	field := v.FieldByName("AllowUnsafe")
+	if !field.IsValid() || !field.CanSet() {
+		return
+	}
+	if field.Kind() == reflect.Bool {
+		field.SetBool(allow)
+	}
+}
+
 func NewTreeDBAdapter(dir string, name string) (*TreeDBAdapter, error) {
 	dbPath := filepath.Join(dir, name)
 	if err := os.MkdirAll(dbPath, 0755); err != nil {
@@ -76,16 +142,33 @@ func NewTreeDBAdapter(dir string, name string) (*TreeDBAdapter, error) {
 
 	disableWAL := envBool(envDisableWAL, false)
 	disableBG := envBool(envDisableBG, false)
+	pinSnapshot := envBool(envPinSnapshot, false)
+	reuseReads := envBool(envReuseReads, false)
+	relaxedSync := envBool(envRelaxedSync, true)
+	disableValueLog := envBool(envDisableValueLog, false)
+	disableReadChecksum := envBool(envDisableReadChecksum, true)
+	_, allowUnsafeSet := os.LookupEnv(envAllowUnsafe)
+	allowUnsafe := envBool(envAllowUnsafe, false)
+	if !allowUnsafeSet && (disableWAL || relaxedSync || disableReadChecksum) {
+		allowUnsafe = true
+	}
+
+	mode := treedb.ModeCached
+	switch strings.ToLower(envString(envMode, "cached")) {
+	case "backend", "raw", "uncached":
+		mode = treedb.ModeBackend
+	}
 
 	openOpts := treedb.Options{
 		Dir:          dbPath,
-		Mode:         treedb.ModeCached,
+		Mode:         mode,
 		MemtableMode: memtableMode,
 
 		// --- "Unsafe" Performance Options ---
 		DisableWAL:          disableWAL,
-		RelaxedSync:         true,
-		DisableReadChecksum: true,
+		DisableValueLog:     disableValueLog,
+		RelaxedSync:         relaxedSync,
+		DisableReadChecksum: disableReadChecksum,
 
 		// --- Tuning for High-Throughput & Large Values ---
 		FlushThreshold:        64 * 1024 * 1024,
@@ -100,6 +183,7 @@ func NewTreeDBAdapter(dir string, name string) (*TreeDBAdapter, error) {
 		//BackgroundCompactionInterval:  1 * time.Second,
 		//BackgroundCompactionDeadRatio: 0.1,
 	}
+	setAllowUnsafe(&openOpts, allowUnsafe)
 
 	if disableBG {
 		// Background tasks can dominate profile lock/wait time and obscure the
@@ -115,30 +199,49 @@ func NewTreeDBAdapter(dir string, name string) (*TreeDBAdapter, error) {
 		return nil, err
 	}
 
-	return &TreeDBAdapter{
-		db: tdb,
-		kv: treedbadapter.Wrap(tdb),
-	}, nil
+	adapter := &TreeDBAdapter{
+		db:         tdb,
+		kv:         treedbadapter.Wrap(tdb),
+		reuseReads: reuseReads,
+	}
+	if pinSnapshot {
+		adapter.PinSnapshot()
+	}
+	return adapter, nil
 }
 
 func (d *TreeDBAdapter) Get(key []byte) ([]byte, error) {
-	if d.kv == nil {
+	if d.snap != nil {
+		val, err := d.snap.GetUnsafe(key)
+		if err != nil {
+			if errors.Is(err, tree.ErrKeyNotFound) {
+				return nil, nil
+			}
+			return nil, err
+		}
+		return val, nil
+	}
+	if d.db == nil {
 		return nil, treedb.ErrClosed
 	}
-	value, err := d.kv.Get(key)
-	if err != nil {
-		return nil, err
+	if d.reuseReads {
+		val, err := d.db.GetAppend(key, d.readBuf[:0])
+		if err != nil {
+			if errors.Is(err, tree.ErrKeyNotFound) {
+				return nil, nil
+			}
+			return nil, err
+		}
+		d.readBuf = val[:0]
+		return val, nil
 	}
-	if value == nil {
-		return nil, nil
-	}
-	// TreeDB may return a read-only view into mmaped pages/slabs; iavl's DB
-	// contract treats returned bytes as read-only, so returning the view avoids
-	// a high allocation rate from per-Get copying.
-	return value, nil
+	return d.kv.GetUnsafe(key)
 }
 
 func (d *TreeDBAdapter) Has(key []byte) (bool, error) {
+	if d.snap != nil {
+		return d.snap.Has(key)
+	}
 	if d.kv == nil {
 		return false, treedb.ErrClosed
 	}
@@ -171,6 +274,7 @@ func (d *TreeDBAdapter) Close() error {
 	if d.db == nil {
 		return nil
 	}
+	d.UnpinSnapshot()
 	err := d.db.Close()
 	d.db = nil
 	d.kv = nil
@@ -190,6 +294,12 @@ func (d *TreeDBAdapter) NewBatchWithSize(size int) corestore.Batch {
 		kb, err := d.kv.NewBatch()
 		if err == nil {
 			b.kb = kb
+			if sv, ok := kb.(interface{ SetView(key, value []byte) error }); ok {
+				b.setView = sv.SetView
+			}
+			if dv, ok := kb.(interface{ DeleteView(key []byte) error }); ok {
+				b.deleteView = dv.DeleteView
+			}
 		}
 	}
 	return b
@@ -217,10 +327,12 @@ func (d *TreeDBAdapter) FragmentationReport() (map[string]string, error) {
 }
 
 type coreBatch struct {
-	db   *TreeDBAdapter
-	kb   kvstore.Batch
-	size int
-	done bool
+	db         *TreeDBAdapter
+	kb         kvstore.Batch
+	setView    func(key, value []byte) error
+	deleteView func(key []byte) error
+	size       int
+	done       bool
 }
 
 func (b *coreBatch) Set(key, value []byte) error {
@@ -230,7 +342,11 @@ func (b *coreBatch) Set(key, value []byte) error {
 	if value == nil {
 		value = []byte{}
 	}
-	if err := b.kb.Set(key, value); err != nil {
+	if b.setView != nil {
+		if err := b.setView(key, value); err != nil {
+			return err
+		}
+	} else if err := b.kb.Set(key, value); err != nil {
 		return err
 	}
 	b.size += len(key) + len(value)
@@ -241,7 +357,11 @@ func (b *coreBatch) Delete(key []byte) error {
 	if b.done || b.kb == nil {
 		return treedb.ErrClosed
 	}
-	if err := b.kb.Delete(key); err != nil {
+	if b.deleteView != nil {
+		if err := b.deleteView(key); err != nil {
+			return err
+		}
+	} else if err := b.kb.Delete(key); err != nil {
 		return err
 	}
 	b.size += len(key)

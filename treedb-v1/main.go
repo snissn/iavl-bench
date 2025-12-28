@@ -19,6 +19,10 @@ import (
 const (
 	envDiagEnabled = "TREEDB_BENCH_LOG_DIAG"
 	envDiagEvery   = "TREEDB_BENCH_LOG_DIAG_EVERY"
+	envIAVLSync    = "TREEDB_BENCH_IAVL_SYNC"
+	// envCheckpointEvery triggers a TreeDB checkpoint every N committed versions
+	// (0 disables).
+	envCheckpointEvery = "TREEDB_BENCH_CHECKPOINT_EVERY"
 )
 
 type Options struct {
@@ -37,6 +41,9 @@ type MultiTreeWrapper struct {
 	logger      *slog.Logger
 	diagEnabled bool
 	diagEvery   int64
+
+	checkpointEvery int64
+	pinSnapshots    bool
 }
 
 func (m *MultiTreeWrapper) Close() error {
@@ -74,17 +81,6 @@ func (m *MultiTreeWrapper) Commit() error {
 		}
 	}
 
-	/*
-
-		TODO confirm safe?
-
-		for _, d := range m.dbs {
-			if err := d.Checkpoint(); err != nil {
-				return fmt.Errorf("error checkpointing treedb: %w", err)
-			}
-		}
-	*/
-
 	m.version++
 
 	if err := util.SaveVersion(m.dbDir, m.version); err != nil {
@@ -93,6 +89,18 @@ func (m *MultiTreeWrapper) Commit() error {
 
 	if m.diagEnabled && (m.diagEvery <= 1 || (m.version%m.diagEvery) == 0) {
 		m.writeDiagReports(m.version)
+	}
+	if m.checkpointEvery > 0 && (m.version%m.checkpointEvery) == 0 {
+		for _, d := range m.dbs {
+			if err := d.Checkpoint(); err != nil {
+				return err
+			}
+		}
+	}
+	if m.pinSnapshots {
+		for _, d := range m.dbs {
+			d.PinSnapshot()
+		}
 	}
 	return nil
 }
@@ -116,6 +124,9 @@ func main() {
 			trees := make(map[string]*iavl.MutableTree)
 			dbs := make(map[string]*TreeDBAdapter)
 			diagEnabled, diagEvery := loadDiagConfig()
+			pinSnapshots := envBool(envPinSnapshot, false)
+			iavlSyncEnabled := envBool(envIAVLSync, false)
+			checkpointEvery := envInt64(envCheckpointEvery, 0)
 
 			// Initialize our TreeDB Adapter
 			// NOTE: In iavl-v0, they create a new DB for EACH store name using NewGoLevelDBWithOpts.
@@ -131,7 +142,13 @@ func main() {
 				}
 				dbs[storeName] = d
 
-				tree := iavl.NewMutableTree(d, opts.CacheSize, opts.SkipFastStorageUpgrade, logger)
+				tree := iavl.NewMutableTree(
+					d,
+					opts.CacheSize,
+					opts.SkipFastStorageUpgrade,
+					logger,
+					iavl.SyncOption(iavlSyncEnabled),
+				)
 				if version != 0 {
 					_, err := tree.LoadVersion(version)
 					if err != nil {
@@ -140,16 +157,24 @@ func main() {
 				}
 				trees[storeName] = tree
 			}
+			if pinSnapshots {
+				for _, d := range dbs {
+					d.PinSnapshot()
+				}
+			}
 			return &MultiTreeWrapper{
-				trees:   trees,
-				dbs:     dbs,
-				version: version,
-				dbDir:   dbDir,
-				logger:  params.Logger,
+					trees:   trees,
+					dbs:     dbs,
+					version: version,
+					dbDir:   dbDir,
+					logger:  params.Logger,
 
-				diagEnabled: diagEnabled,
-				diagEvery:   diagEvery,
-			}, nil
+					diagEnabled:     diagEnabled,
+					diagEvery:       diagEvery,
+					checkpointEvery: checkpointEvery,
+					pinSnapshots:    pinSnapshots,
+				},
+				nil
 		},
 	})
 }

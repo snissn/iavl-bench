@@ -12,6 +12,7 @@ import (
 
 	corestore "cosmossdk.io/core/store"
 	treedb "github.com/snissn/gomap/TreeDB"
+	"github.com/snissn/gomap/TreeDB/slab"
 	"github.com/snissn/gomap/TreeDB/tree"
 	"github.com/snissn/gomap/kvstore"
 	treedbadapter "github.com/snissn/gomap/kvstore/adapters/treedb"
@@ -28,7 +29,12 @@ const (
 	envAllowUnsafe         = "TREEDB_BENCH_ALLOW_UNSAFE"
 	envMode                = "TREEDB_BENCH_MODE"
 	envPinSnapshot         = "TREEDB_BENCH_PIN_SNAPSHOT"
+	envProfile             = "TREEDB_BENCH_PROFILE"
 	envReuseReads          = "TREEDB_BENCH_REUSE_READS"
+	envSlabCompression     = "TREEDB_SLAB_COMPRESSION"
+	envLeafPrefix          = "TREEDB_LEAF_PREFIX_COMPRESSION"
+	envForcePointers       = "TREEDB_FORCE_VALUE_POINTERS"
+	envAllowView           = "TREEDB_BENCH_ALLOW_VIEW"
 )
 
 // TreeDBAdapter adapts TreeDB to the IAVL v1 db.DB interface.
@@ -134,6 +140,32 @@ func setAllowUnsafe(opts *treedb.Options, allow bool) {
 	}
 }
 
+func applyProfile(opts *treedb.Options, profile string) {
+	switch strings.ToLower(strings.TrimSpace(profile)) {
+	case "durable":
+		treedb.ApplyProfile(opts, treedb.ProfileDurable)
+	case "fast":
+		treedb.ApplyProfile(opts, treedb.ProfileFast)
+	case "bench":
+		treedb.ApplyProfile(opts, treedb.ProfileBench)
+	case "compressed":
+		treedb.ApplyProfile(opts, treedb.ProfileCompressed)
+	case "compressed_fast", "fast_compressed":
+		treedb.ApplyProfile(opts, treedb.ProfileCompressedFast)
+	}
+}
+
+func parseCompressionKind(raw string) (slab.CompressionKind, bool) {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "zstd", "zstandard":
+		return slab.CompressionZSTD, true
+	case "none", "off", "disabled":
+		return slab.CompressionNone, true
+	default:
+		return slab.CompressionNone, false
+	}
+}
+
 func NewTreeDBAdapter(dir string, name string) (*TreeDBAdapter, error) {
 	dbPath := filepath.Join(dir, name)
 	if err := os.MkdirAll(dbPath, 0755); err != nil {
@@ -149,6 +181,7 @@ func NewTreeDBAdapter(dir string, name string) (*TreeDBAdapter, error) {
 	disableReadChecksum := envBool(envDisableReadChecksum, true)
 	_, allowUnsafeSet := os.LookupEnv(envAllowUnsafe)
 	allowUnsafe := envBool(envAllowUnsafe, false)
+	allowView := envBool(envAllowView, false)
 	if !allowUnsafeSet && (disableWAL || relaxedSync || disableReadChecksum) {
 		allowUnsafe = true
 	}
@@ -163,26 +196,39 @@ func NewTreeDBAdapter(dir string, name string) (*TreeDBAdapter, error) {
 		Dir:          dbPath,
 		Mode:         mode,
 		MemtableMode: memtableMode,
-
-		// --- "Unsafe" Performance Options ---
-		DisableWAL:          disableWAL,
-		DisableValueLog:     disableValueLog,
-		RelaxedSync:         relaxedSync,
-		DisableReadChecksum: disableReadChecksum,
-
-		// --- Tuning for High-Throughput & Large Values ---
-		FlushThreshold:        64 * 1024 * 1024,
-		FlushBuildConcurrency: 4,
-		ChunkSize:             64 * 1024 * 1024,
-
-		PreferAppendAlloc:             false,
-		KeepRecent:                    1,
-		BackgroundIndexVacuumInterval: 15 * time.Second,
-
-		// Add Value Log Compaction
-		//BackgroundCompactionInterval:  1 * time.Second,
-		//BackgroundCompactionDeadRatio: 0.1,
 	}
+
+	applyProfile(&openOpts, envString(envProfile, ""))
+
+	// --- "Unsafe" Performance Options ---
+	openOpts.DisableWAL = disableWAL
+	openOpts.DisableValueLog = disableValueLog
+	openOpts.RelaxedSync = relaxedSync
+	openOpts.DisableReadChecksum = disableReadChecksum
+
+	if _, ok := os.LookupEnv(envLeafPrefix); ok {
+		openOpts.LeafPrefixCompression = envBool(envLeafPrefix, false)
+	}
+	if raw, ok := os.LookupEnv(envSlabCompression); ok {
+		if kind, parsed := parseCompressionKind(raw); parsed {
+			openOpts.SlabCompression.Kind = kind
+		}
+	}
+	if _, ok := os.LookupEnv(envForcePointers); ok {
+		openOpts.ForceValuePointers = envBool(envForcePointers, false)
+	}
+
+	// --- Tuning for High-Throughput & Large Values ---
+	openOpts.FlushThreshold = 64 * 1024 * 1024
+	openOpts.FlushBuildConcurrency = 4
+	openOpts.ChunkSize = 64 * 1024 * 1024
+	openOpts.PreferAppendAlloc = false
+	openOpts.KeepRecent = 1
+	openOpts.BackgroundIndexVacuumInterval = 15 * time.Second
+
+	// Add Value Log Compaction
+	//openOpts.BackgroundCompactionInterval = 1 * time.Second
+	//openOpts.BackgroundCompactionDeadRatio = 0.1
 	setAllowUnsafe(&openOpts, allowUnsafe)
 
 	if disableBG {
@@ -294,11 +340,13 @@ func (d *TreeDBAdapter) NewBatchWithSize(size int) corestore.Batch {
 		kb, err := d.kv.NewBatch()
 		if err == nil {
 			b.kb = kb
-			if sv, ok := kb.(interface{ SetView(key, value []byte) error }); ok {
-				b.setView = sv.SetView
-			}
-			if dv, ok := kb.(interface{ DeleteView(key []byte) error }); ok {
-				b.deleteView = dv.DeleteView
+			if allowView {
+				if sv, ok := kb.(interface{ SetView(key, value []byte) error }); ok {
+					b.setView = sv.SetView
+				}
+				if dv, ok := kb.(interface{ DeleteView(key []byte) error }); ok {
+					b.deleteView = dv.DeleteView
+				}
 			}
 		}
 	}

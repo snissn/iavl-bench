@@ -44,6 +44,7 @@ type TreeDBAdapter struct {
 	snap       *treedb.Snapshot
 	reuseReads bool
 	readBuf    []byte
+	allowView  bool
 }
 
 func (d *TreeDBAdapter) PinSnapshot() {
@@ -181,7 +182,6 @@ func NewTreeDBAdapter(dir string, name string) (*TreeDBAdapter, error) {
 	disableReadChecksum := envBool(envDisableReadChecksum, true)
 	_, allowUnsafeSet := os.LookupEnv(envAllowUnsafe)
 	allowUnsafe := envBool(envAllowUnsafe, false)
-	allowView := envBool(envAllowView, false)
 	if !allowUnsafeSet && (disableWAL || relaxedSync || disableReadChecksum) {
 		allowUnsafe = true
 	}
@@ -249,6 +249,7 @@ func NewTreeDBAdapter(dir string, name string) (*TreeDBAdapter, error) {
 		db:         tdb,
 		kv:         treedbadapter.Wrap(tdb),
 		reuseReads: reuseReads,
+		allowView:  envBool(envAllowView, false),
 	}
 	if pinSnapshot {
 		adapter.PinSnapshot()
@@ -340,7 +341,7 @@ func (d *TreeDBAdapter) NewBatchWithSize(size int) corestore.Batch {
 		kb, err := d.kv.NewBatch()
 		if err == nil {
 			b.kb = kb
-			if allowView {
+			if d.allowView {
 				if sv, ok := kb.(interface{ SetView(key, value []byte) error }); ok {
 					b.setView = sv.SetView
 				}

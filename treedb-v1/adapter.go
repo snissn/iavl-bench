@@ -35,16 +35,18 @@ const (
 	envLeafPrefix          = "TREEDB_LEAF_PREFIX_COMPRESSION"
 	envForcePointers       = "TREEDB_FORCE_VALUE_POINTERS"
 	envAllowView           = "TREEDB_BENCH_ALLOW_VIEW"
+	envAllowUnsafeReads    = "TREEDB_BENCH_ALLOW_UNSAFE_READS"
 )
 
 // TreeDBAdapter adapts TreeDB to the IAVL v1 db.DB interface.
 type TreeDBAdapter struct {
-	db         *treedb.DB
-	kv         *treedbadapter.DB
-	snap       *treedb.Snapshot
-	reuseReads bool
-	readBuf    []byte
-	allowView  bool
+	db               *treedb.DB
+	kv               *treedbadapter.DB
+	snap             *treedb.Snapshot
+	reuseReads       bool
+	readBuf          []byte
+	allowView        bool
+	allowUnsafeReads bool
 }
 
 func (d *TreeDBAdapter) PinSnapshot() {
@@ -246,10 +248,11 @@ func NewTreeDBAdapter(dir string, name string) (*TreeDBAdapter, error) {
 	}
 
 	adapter := &TreeDBAdapter{
-		db:         tdb,
-		kv:         treedbadapter.Wrap(tdb),
-		reuseReads: reuseReads,
-		allowView:  envBool(envAllowView, false),
+		db:               tdb,
+		kv:               treedbadapter.Wrap(tdb),
+		reuseReads:       reuseReads,
+		allowView:        envBool(envAllowView, false),
+		allowUnsafeReads: envBool(envAllowUnsafeReads, false),
 	}
 	if pinSnapshot {
 		adapter.PinSnapshot()
@@ -282,7 +285,10 @@ func (d *TreeDBAdapter) Get(key []byte) ([]byte, error) {
 		d.readBuf = val[:0]
 		return val, nil
 	}
-	return d.kv.GetUnsafe(key)
+	if d.allowUnsafeReads {
+		return d.kv.GetUnsafe(key)
+	}
+	return d.kv.Get(key)
 }
 
 func (d *TreeDBAdapter) Has(key []byte) (bool, error) {

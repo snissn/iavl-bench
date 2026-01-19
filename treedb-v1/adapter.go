@@ -26,9 +26,12 @@ const memtableMode = "adaptive"
 
 const (
 	envDisableWAL          = "TREEDB_BENCH_DISABLE_WAL"
+	envDisableJournal      = "TREEDB_BENCH_DISABLE_JOURNAL"
 	envDisableBG           = "TREEDB_BENCH_DISABLE_BG"
 	envRelaxedSync         = "TREEDB_BENCH_RELAXED_SYNC"
 	envDisableValueLog     = "TREEDB_BENCH_DISABLE_VALUE_LOG"
+	envSplitValueLog       = "TREEDB_BENCH_SPLIT_VALUE_LOG"
+	envMemtableVlogPtrs    = "TREEDB_BENCH_MEMTABLE_VALUE_LOG_POINTERS"
 	envDisableReadChecksum = "TREEDB_BENCH_DISABLE_READ_CHECKSUM"
 	envAllowUnsafe         = "TREEDB_BENCH_ALLOW_UNSAFE"
 	envMode                = "TREEDB_BENCH_MODE"
@@ -199,11 +202,14 @@ func NewTreeDBAdapter(dir string, name string) (*TreeDBAdapter, error) {
 	}
 
 	disableWAL := envBool(envDisableWAL, false)
+	disableJournal := envBool(envDisableJournal, false)
 	disableBG := envBool(envDisableBG, false)
 	pinSnapshot := envBool(envPinSnapshot, false)
 	reuseReads := envBool(envReuseReads, false)
 	relaxedSync := envBool(envRelaxedSync, true)
 	disableValueLog := envBool(envDisableValueLog, false)
+	splitValueLog := envBool(envSplitValueLog, false)
+	memtableVlogPtrs := envBool(envMemtableVlogPtrs, false)
 	disableReadChecksum := envBool(envDisableReadChecksum, true)
 	verifyOnRead := envBool(envVerifyOnRead, false)
 	_, leafPrefixSet := os.LookupEnv(envLeafPrefix)
@@ -214,7 +220,7 @@ func NewTreeDBAdapter(dir string, name string) (*TreeDBAdapter, error) {
 	indexBaseDelta := envBool(envIndexBaseDelta, false)
 	_, allowUnsafeSet := os.LookupEnv(envAllowUnsafe)
 	allowUnsafe := envBool(envAllowUnsafe, false)
-	if !allowUnsafeSet && (disableWAL || relaxedSync || disableReadChecksum) {
+	if !allowUnsafeSet && (disableWAL || disableJournal || relaxedSync || disableReadChecksum) {
 		allowUnsafe = true
 	}
 
@@ -238,6 +244,9 @@ func NewTreeDBAdapter(dir string, name string) (*TreeDBAdapter, error) {
 	openOpts.DisableValueLog = disableValueLog
 	openOpts.RelaxedSync = relaxedSync
 	openOpts.DisableReadChecksum = disableReadChecksum
+	setBoolOption(&openOpts, "DisableJournal", disableJournal)
+	setBoolOption(&openOpts, "SplitValueLog", splitValueLog)
+	setBoolOption(&openOpts, "MemtableValueLogPointers", memtableVlogPtrs)
 
 	// --- Tuning for High-Throughput & Large Values ---
 	openOpts.FlushThreshold = 64 * 1024 * 1024

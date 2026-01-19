@@ -36,12 +36,12 @@ warm_changesets() {
 #TREEDB_LEAF_PREFIX_COMPRESSION=1 
 
 echo "Running IAVL v1 TreeDB Benchmark..."
-flag="fast_compressed"
+flag="fast"
 warm_changesets
 db_dir="data-treedb-v1/${flag}"
 log_file="${RESULTS_DIR}/treedb-v1-${flag}.jsonl"
 env \
-  TREEDB_BENCH_PROFILE="${TREEDB_BENCH_PROFILE:-compressed_fast}" \
+  TREEDB_BENCH_PROFILE="${TREEDB_BENCH_PROFILE:-fast}" \
   TREEDB_BENCH_MODE="${TREEDB_BENCH_MODE:-cached}" \
   TREEDB_BENCH_DISABLE_BG="$DISABLE_BG" \
   TREEDB_BENCH_DISABLE_WAL="${TREEDB_BENCH_DISABLE_WAL:-1}" \

@@ -1,6 +1,6 @@
 module github.com/cosmos/iavl-bench/treedb-v1
 
-go 1.25.5
+go 1.25
 
 replace github.com/cosmos/iavl-bench/bench => ../bench
 

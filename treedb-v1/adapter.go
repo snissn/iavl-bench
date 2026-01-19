@@ -1,6 +1,9 @@
 package main
 
 import (
+	"bufio"
+	"bytes"
+	"encoding/gob"
 	"errors"
 	"fmt"
 	"os"
@@ -8,6 +11,7 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	corestore "cosmossdk.io/core/store"
@@ -34,8 +38,16 @@ const (
 	envSlabCompression     = "TREEDB_SLAB_COMPRESSION"
 	envLeafPrefix          = "TREEDB_LEAF_PREFIX_COMPRESSION"
 	envForcePointers       = "TREEDB_FORCE_VALUE_POINTERS"
+	envJournalLanes        = "TREEDB_JOURNAL_LANES"
+	envIndexColumnarLeaves = "TREEDB_INDEX_COLUMNAR_LEAVES"
+	envIndexBaseDelta      = "TREEDB_INDEX_INTERNAL_BASE_DELTA"
 	envAllowView           = "TREEDB_BENCH_ALLOW_VIEW"
 	envAllowUnsafeReads    = "TREEDB_BENCH_ALLOW_UNSAFE_READS"
+	envVerifyOnRead        = "TREEDB_BENCH_VERIFY_ON_READ"
+	envTraceWrites         = "TREEDB_BENCH_TRACE_WRITES"
+	envTraceOpsLimit       = "TREEDB_BENCH_TRACE_OPS"
+	envTraceBytesLimit     = "TREEDB_BENCH_TRACE_BYTES"
+	envTraceStream         = "TREEDB_BENCH_TRACE_STREAM"
 )
 
 // TreeDBAdapter adapts TreeDB to the IAVL v1 db.DB interface.
@@ -47,6 +59,10 @@ type TreeDBAdapter struct {
 	readBuf          []byte
 	allowView        bool
 	allowUnsafeReads bool
+	storeName        string
+	storeDir         string
+	trace            *traceRecorder
+	stream           *traceStream
 }
 
 func (d *TreeDBAdapter) PinSnapshot() {
@@ -132,15 +148,37 @@ func envString(name string, defaultValue string) string {
 	return v
 }
 
-func setAllowUnsafe(opts *treedb.Options, allow bool) {
+func setBoolOption(opts *treedb.Options, name string, value bool) {
 	v := reflect.ValueOf(opts).Elem()
-	field := v.FieldByName("AllowUnsafe")
-	if !field.IsValid() || !field.CanSet() {
+	field := v.FieldByName(name)
+	if !field.IsValid() || !field.CanSet() || field.Kind() != reflect.Bool {
 		return
 	}
-	if field.Kind() == reflect.Bool {
-		field.SetBool(allow)
+	field.SetBool(value)
+}
+
+func setIntOption(opts *treedb.Options, name string, value int) {
+	v := reflect.ValueOf(opts).Elem()
+	field := v.FieldByName(name)
+	if !field.IsValid() || !field.CanSet() || field.Kind() != reflect.Int {
+		return
 	}
+	field.SetInt(int64(value))
+}
+
+func parseSlabCompression(value string) slab.CompressionOptions {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "zstd", "zstandard":
+		return slab.CompressionOptions{Kind: slab.CompressionZSTD}
+	case "none", "off", "":
+		return slab.CompressionOptions{Kind: slab.CompressionNone}
+	default:
+		return slab.CompressionOptions{Kind: slab.CompressionNone}
+	}
+}
+
+func setAllowUnsafe(opts *treedb.Options, allow bool) {
+	setBoolOption(opts, "AllowUnsafe", allow)
 }
 
 func applyProfile(opts *treedb.Options, profile string) {
@@ -151,21 +189,6 @@ func applyProfile(opts *treedb.Options, profile string) {
 		treedb.ApplyProfile(opts, treedb.ProfileFast)
 	case "bench":
 		treedb.ApplyProfile(opts, treedb.ProfileBench)
-	case "compressed":
-		treedb.ApplyProfile(opts, treedb.ProfileCompressed)
-	case "compressed_fast", "fast_compressed":
-		treedb.ApplyProfile(opts, treedb.ProfileCompressedFast)
-	}
-}
-
-func parseCompressionKind(raw string) (slab.CompressionKind, bool) {
-	switch strings.ToLower(strings.TrimSpace(raw)) {
-	case "zstd", "zstandard":
-		return slab.CompressionZSTD, true
-	case "none", "off", "disabled":
-		return slab.CompressionNone, true
-	default:
-		return slab.CompressionNone, false
 	}
 }
 
@@ -182,6 +205,13 @@ func NewTreeDBAdapter(dir string, name string) (*TreeDBAdapter, error) {
 	relaxedSync := envBool(envRelaxedSync, true)
 	disableValueLog := envBool(envDisableValueLog, false)
 	disableReadChecksum := envBool(envDisableReadChecksum, true)
+	verifyOnRead := envBool(envVerifyOnRead, false)
+	_, leafPrefixSet := os.LookupEnv(envLeafPrefix)
+	_, forcePointersSet := os.LookupEnv(envForcePointers)
+	slabCompression, slabCompressionSet := os.LookupEnv(envSlabCompression)
+	journalLanes := int(envInt64(envJournalLanes, 0))
+	indexColumnar := envBool(envIndexColumnarLeaves, false)
+	indexBaseDelta := envBool(envIndexBaseDelta, false)
 	_, allowUnsafeSet := os.LookupEnv(envAllowUnsafe)
 	allowUnsafe := envBool(envAllowUnsafe, false)
 	if !allowUnsafeSet && (disableWAL || relaxedSync || disableReadChecksum) {
@@ -199,6 +229,7 @@ func NewTreeDBAdapter(dir string, name string) (*TreeDBAdapter, error) {
 		Mode:         mode,
 		MemtableMode: memtableMode,
 	}
+	openOpts.VerifyOnRead = verifyOnRead
 
 	applyProfile(&openOpts, envString(envProfile, ""))
 
@@ -208,18 +239,6 @@ func NewTreeDBAdapter(dir string, name string) (*TreeDBAdapter, error) {
 	openOpts.RelaxedSync = relaxedSync
 	openOpts.DisableReadChecksum = disableReadChecksum
 
-	if _, ok := os.LookupEnv(envLeafPrefix); ok {
-		openOpts.LeafPrefixCompression = envBool(envLeafPrefix, false)
-	}
-	if raw, ok := os.LookupEnv(envSlabCompression); ok {
-		if kind, parsed := parseCompressionKind(raw); parsed {
-			openOpts.SlabCompression.Kind = kind
-		}
-	}
-	if _, ok := os.LookupEnv(envForcePointers); ok {
-		openOpts.ForceValuePointers = envBool(envForcePointers, false)
-	}
-
 	// --- Tuning for High-Throughput & Large Values ---
 	openOpts.FlushThreshold = 64 * 1024 * 1024
 	openOpts.FlushBuildConcurrency = 4
@@ -227,6 +246,18 @@ func NewTreeDBAdapter(dir string, name string) (*TreeDBAdapter, error) {
 	openOpts.PreferAppendAlloc = false
 	openOpts.KeepRecent = 1
 	openOpts.BackgroundIndexVacuumInterval = 15 * time.Second
+	if leafPrefixSet {
+		openOpts.LeafPrefixCompression = envBool(envLeafPrefix, false)
+	}
+	if forcePointersSet {
+		openOpts.ForceValuePointers = envBool(envForcePointers, false)
+	}
+	if slabCompressionSet {
+		openOpts.SlabCompression = parseSlabCompression(slabCompression)
+	}
+	setIntOption(&openOpts, "JournalLanes", journalLanes)
+	setBoolOption(&openOpts, "IndexColumnarLeaves", indexColumnar)
+	setBoolOption(&openOpts, "IndexInternalBaseDelta", indexBaseDelta)
 
 	// Add Value Log Compaction
 	//openOpts.BackgroundCompactionInterval = 1 * time.Second
@@ -253,6 +284,18 @@ func NewTreeDBAdapter(dir string, name string) (*TreeDBAdapter, error) {
 		reuseReads:       reuseReads,
 		allowView:        envBool(envAllowView, false),
 		allowUnsafeReads: envBool(envAllowUnsafeReads, false),
+		storeName:        name,
+		storeDir:         dbPath,
+	}
+	if envBool(envTraceWrites, false) {
+		traceOps := int(envInt64(envTraceOpsLimit, 200_000))
+		traceBytes := int(envInt64(envTraceBytesLimit, 64*1024*1024))
+		adapter.trace = newTraceRecorder(traceOps, traceBytes)
+		if envBool(envTraceStream, false) {
+			if stream, err := newTraceStream(adapter.storeDir, adapter.storeName); err == nil {
+				adapter.stream = stream
+			}
+		}
 	}
 	if pinSnapshot {
 		adapter.PinSnapshot()
@@ -328,6 +371,10 @@ func (d *TreeDBAdapter) Close() error {
 		return nil
 	}
 	d.UnpinSnapshot()
+	if d.stream != nil {
+		_ = d.stream.Close()
+		d.stream = nil
+	}
 	err := d.db.Close()
 	d.db = nil
 	d.kv = nil
@@ -381,6 +428,42 @@ func (d *TreeDBAdapter) FragmentationReport() (map[string]string, error) {
 	return d.db.FragmentationReport()
 }
 
+func (d *TreeDBAdapter) DumpTrace(path string, version int64) error {
+	if d.trace == nil {
+		return nil
+	}
+	dump := d.trace.snapshot()
+	if len(dump) == 0 {
+		return nil
+	}
+	data := traceDump{
+		Version: version,
+		Store:   d.storeName,
+		Ops:     dump,
+	}
+	var buf bytes.Buffer
+	enc := gob.NewEncoder(&buf)
+	if err := enc.Encode(&data); err != nil {
+		return err
+	}
+	return os.WriteFile(path, buf.Bytes(), 0644)
+}
+
+func (d *TreeDBAdapter) DumpTraceOnError(reason string) {
+	if d.trace == nil || d.storeDir == "" {
+		return
+	}
+	suffix := fmt.Sprintf("%d", time.Now().UnixNano())
+	if reason != "" {
+		suffix = reason + "-" + suffix
+	}
+	path := filepath.Join(d.storeDir, fmt.Sprintf("bench-trace-%s-%s.gob", d.storeName, suffix))
+	_ = d.DumpTrace(path, 0)
+	if d.stream != nil {
+		_ = d.stream.Flush()
+	}
+}
+
 type coreBatch struct {
 	db         *TreeDBAdapter
 	kb         kvstore.Batch
@@ -397,11 +480,23 @@ func (b *coreBatch) Set(key, value []byte) error {
 	if value == nil {
 		value = []byte{}
 	}
+	if b.db != nil && b.db.trace != nil {
+		b.db.trace.record(traceOp{Type: traceOpSet, Key: append([]byte(nil), key...), Value: append([]byte(nil), value...)})
+	}
+	if b.db != nil && b.db.stream != nil {
+		b.db.stream.record(traceOp{Type: traceOpSet, Key: append([]byte(nil), key...), Value: append([]byte(nil), value...)})
+	}
 	if b.setView != nil {
 		if err := b.setView(key, value); err != nil {
+			if b.db != nil {
+				b.db.DumpTraceOnError("set")
+			}
 			return err
 		}
 	} else if err := b.kb.Set(key, value); err != nil {
+		if b.db != nil {
+			b.db.DumpTraceOnError("set")
+		}
 		return err
 	}
 	b.size += len(key) + len(value)
@@ -412,11 +507,23 @@ func (b *coreBatch) Delete(key []byte) error {
 	if b.done || b.kb == nil {
 		return treedb.ErrClosed
 	}
+	if b.db != nil && b.db.trace != nil {
+		b.db.trace.record(traceOp{Type: traceOpDelete, Key: append([]byte(nil), key...)})
+	}
+	if b.db != nil && b.db.stream != nil {
+		b.db.stream.record(traceOp{Type: traceOpDelete, Key: append([]byte(nil), key...)})
+	}
 	if b.deleteView != nil {
 		if err := b.deleteView(key); err != nil {
+			if b.db != nil {
+				b.db.DumpTraceOnError("del")
+			}
 			return err
 		}
 	} else if err := b.kb.Delete(key); err != nil {
+		if b.db != nil {
+			b.db.DumpTraceOnError("del")
+		}
 		return err
 	}
 	b.size += len(key)
@@ -427,16 +534,40 @@ func (b *coreBatch) Write() error {
 	if b.done || b.kb == nil {
 		return treedb.ErrClosed
 	}
+	if b.db != nil && b.db.trace != nil {
+		b.db.trace.record(traceOp{Type: traceOpCommit})
+	}
+	if b.db != nil && b.db.stream != nil {
+		b.db.stream.record(traceOp{Type: traceOpCommit})
+	}
 	b.done = true
-	return b.kb.Commit()
+	if err := b.kb.Commit(); err != nil {
+		if b.db != nil {
+			b.db.DumpTraceOnError("commit")
+		}
+		return err
+	}
+	return nil
 }
 
 func (b *coreBatch) WriteSync() error {
 	if b.done || b.kb == nil {
 		return treedb.ErrClosed
 	}
+	if b.db != nil && b.db.trace != nil {
+		b.db.trace.record(traceOp{Type: traceOpCommit})
+	}
+	if b.db != nil && b.db.stream != nil {
+		b.db.stream.record(traceOp{Type: traceOpCommit})
+	}
 	b.done = true
-	return b.kb.CommitSync()
+	if err := b.kb.CommitSync(); err != nil {
+		if b.db != nil {
+			b.db.DumpTraceOnError("commit")
+		}
+		return err
+	}
+	return nil
 }
 
 func (b *coreBatch) Close() error {
@@ -497,6 +628,144 @@ func (it *coreIterator) Value() []byte {
 
 func (it *coreIterator) Error() error { return it.iter.Error() }
 func (it *coreIterator) Close() error { return it.iter.Close() }
+
+const (
+	traceOpSet    = "set"
+	traceOpDelete = "del"
+	traceOpCommit = "commit"
+)
+
+type traceOp struct {
+	Type  string
+	Key   []byte
+	Value []byte
+}
+
+type traceDump struct {
+	Version int64
+	Store   string
+	Ops     []traceOp
+}
+
+type traceStreamHeader struct {
+	Version int64
+	Store   string
+	Created int64
+}
+
+type traceRecorder struct {
+	mu       sync.Mutex
+	maxOps   int
+	maxBytes int
+	bytes    int
+	ops      []traceOp
+}
+
+func newTraceRecorder(maxOps, maxBytes int) *traceRecorder {
+	if maxOps <= 0 {
+		maxOps = 200_000
+	}
+	if maxBytes <= 0 {
+		maxBytes = 64 * 1024 * 1024
+	}
+	return &traceRecorder{
+		maxOps:   maxOps,
+		maxBytes: maxBytes,
+		ops:      make([]traceOp, 0, maxOps),
+	}
+}
+
+func (r *traceRecorder) record(op traceOp) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	opBytes := len(op.Key) + len(op.Value)
+	r.ops = append(r.ops, op)
+	r.bytes += opBytes
+	for (r.maxOps > 0 && len(r.ops) > r.maxOps) || (r.maxBytes > 0 && r.bytes > r.maxBytes) {
+		drop := r.ops[0]
+		r.ops = r.ops[1:]
+		r.bytes -= len(drop.Key) + len(drop.Value)
+		if r.bytes < 0 {
+			r.bytes = 0
+		}
+	}
+}
+
+func (r *traceRecorder) snapshot() []traceOp {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]traceOp, len(r.ops))
+	copy(out, r.ops)
+	return out
+}
+
+type traceStream struct {
+	mu     sync.Mutex
+	file   *os.File
+	writer *bufio.Writer
+	enc    *gob.Encoder
+}
+
+func newTraceStream(dir, store string) (*traceStream, error) {
+	if dir == "" || store == "" {
+		return nil, fmt.Errorf("trace stream requires store dir and name")
+	}
+	path := filepath.Join(dir, fmt.Sprintf("bench-trace-stream-%s-%d.gob", store, time.Now().UnixNano()))
+	f, err := os.Create(path)
+	if err != nil {
+		return nil, err
+	}
+	w := bufio.NewWriterSize(f, 1<<20)
+	enc := gob.NewEncoder(w)
+	header := traceStreamHeader{
+		Version: 0,
+		Store:   store,
+		Created: time.Now().UnixNano(),
+	}
+	if err := enc.Encode(&header); err != nil {
+		_ = f.Close()
+		return nil, err
+	}
+	if err := w.Flush(); err != nil {
+		_ = f.Close()
+		return nil, err
+	}
+	return &traceStream{file: f, writer: w, enc: enc}, nil
+}
+
+func (s *traceStream) record(op traceOp) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.enc == nil {
+		return
+	}
+	_ = s.enc.Encode(&op)
+}
+
+func (s *traceStream) Flush() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.writer == nil {
+		return nil
+	}
+	return s.writer.Flush()
+}
+
+func (s *traceStream) Close() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.writer != nil {
+		_ = s.writer.Flush()
+	}
+	if s.file != nil {
+		err := s.file.Close()
+		s.file = nil
+		s.writer = nil
+		s.enc = nil
+		return err
+	}
+	return nil
+}
 
 var _ corestore.Batch = (*coreBatch)(nil)
 var _ corestore.Iterator = (*coreIterator)(nil)

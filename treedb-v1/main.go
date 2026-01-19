@@ -20,6 +20,8 @@ const (
 	envDiagEnabled = "TREEDB_BENCH_LOG_DIAG"
 	envDiagEvery   = "TREEDB_BENCH_LOG_DIAG_EVERY"
 	envIAVLSync    = "TREEDB_BENCH_IAVL_SYNC"
+	envDumpOnError = "TREEDB_BENCH_DUMP_ON_ERROR"
+	envPanicOnErr  = "TREEDB_BENCH_PANIC_ON_ERROR"
 	// envCheckpointEvery triggers a TreeDB checkpoint every N committed versions
 	// (0 disables).
 	envCheckpointEvery = "TREEDB_BENCH_CHECKPOINT_EVERY"
@@ -44,6 +46,9 @@ type MultiTreeWrapper struct {
 
 	checkpointEvery int64
 	pinSnapshots    bool
+
+	dumpOnError  bool
+	panicOnError bool
 }
 
 func (m *MultiTreeWrapper) Close() error {
@@ -77,6 +82,12 @@ func (m *MultiTreeWrapper) Commit() error {
 	for _, tree := range m.trees {
 		_, _, err := tree.SaveVersion()
 		if err != nil {
+			if m.dumpOnError {
+				m.dumpCommitError(tree, err)
+			}
+			if m.panicOnError {
+				panic(err)
+			}
 			return err
 		}
 	}
@@ -127,6 +138,8 @@ func main() {
 			pinSnapshots := envBool(envPinSnapshot, false)
 			iavlSyncEnabled := envBool(envIAVLSync, false)
 			checkpointEvery := envInt64(envCheckpointEvery, 0)
+			dumpOnError := envBool(envDumpOnError, true)
+			panicOnError := envBool(envPanicOnErr, false)
 
 			// Initialize our TreeDB Adapter
 			// NOTE: In iavl-v0, they create a new DB for EACH store name using NewGoLevelDBWithOpts.
@@ -173,6 +186,8 @@ func main() {
 					diagEvery:       diagEvery,
 					checkpointEvery: checkpointEvery,
 					pinSnapshots:    pinSnapshots,
+					dumpOnError:     dumpOnError,
+					panicOnError:    panicOnError,
 				},
 				nil
 		},
@@ -232,6 +247,68 @@ func (m *MultiTreeWrapper) writeDiagReports(version int64) {
 		if m.logger != nil {
 			m.logger.Info("wrote treedb diag report", "store", storeName, "path", path, "version", version)
 		}
+	}
+}
+
+func (m *MultiTreeWrapper) dumpCommitError(tree *iavl.MutableTree, err error) {
+	storeName := ""
+	for name, t := range m.trees {
+		if t == tree {
+			storeName = name
+			break
+		}
+	}
+	d := m.dbs[storeName]
+	stats := map[string]string{}
+	if d != nil {
+		if s := d.Stats(); s != nil {
+			for k, v := range s {
+				stats[k] = v
+			}
+		}
+		if frag, fragErr := d.FragmentationReport(); fragErr == nil {
+			for k, v := range frag {
+				stats["frag."+k] = v
+			}
+		} else {
+			stats["frag.error"] = fragErr.Error()
+		}
+		if d.db != nil {
+			for k, v := range d.db.Stats() {
+				stats[k] = v
+			}
+		}
+	}
+
+	dbPath := m.dbDir
+	if storeName != "" {
+		dbPath = filepath.Join(m.dbDir, storeName)
+	}
+	path := filepath.Join(dbPath, fmt.Sprintf("bench-error-v%05d.txt", m.version))
+	tracePath := filepath.Join(dbPath, fmt.Sprintf("bench-trace-%s-v%05d.gob", storeName, m.version))
+
+	var b strings.Builder
+	b.WriteString("time=")
+	b.WriteString(time.Now().Format(time.RFC3339Nano))
+	b.WriteString("\n")
+	b.WriteString("version=")
+	b.WriteString(strconv.FormatInt(m.version, 10))
+	b.WriteString("\n")
+	b.WriteString("store=")
+	b.WriteString(storeName)
+	b.WriteString("\n")
+	b.WriteString("error=")
+	b.WriteString(err.Error())
+	b.WriteString("\n\n")
+	b.WriteString("Stats:\n")
+	writeSortedMap(&b, stats)
+
+	_ = os.WriteFile(path, []byte(b.String()), 0644)
+	if d != nil {
+		_ = d.DumpTrace(tracePath, m.version)
+	}
+	if m.logger != nil {
+		m.logger.Error("treedb commit failed", "store", storeName, "error", err, "path", path)
 	}
 }
 

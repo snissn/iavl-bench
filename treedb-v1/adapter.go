@@ -34,6 +34,7 @@ const (
 	envMemtableVlogPtrs    = "TREEDB_BENCH_MEMTABLE_VALUE_LOG_POINTERS"
 	envDisableReadChecksum = "TREEDB_BENCH_DISABLE_READ_CHECKSUM"
 	envAllowUnsafe         = "TREEDB_BENCH_ALLOW_UNSAFE"
+	envVlogDictTrainBytes  = "TREEDB_BENCH_VLOG_DICT_TRAIN_BYTES"
 	envMode                = "TREEDB_BENCH_MODE"
 	envPinSnapshot         = "TREEDB_BENCH_PIN_SNAPSHOT"
 	envProfile             = "TREEDB_BENCH_PROFILE"
@@ -238,6 +239,9 @@ func NewTreeDBAdapter(dir string, name string) (*TreeDBAdapter, error) {
 	openOpts.VerifyOnRead = verifyOnRead
 
 	applyProfile(&openOpts, envString(envProfile, ""))
+	if _, ok := os.LookupEnv(envVlogDictTrainBytes); ok {
+		openOpts.ValueLogDictTrain.TrainBytes = int(envInt64(envVlogDictTrainBytes, 0))
+	}
 
 	// --- "Unsafe" Performance Options ---
 	openOpts.DisableWAL = disableWAL

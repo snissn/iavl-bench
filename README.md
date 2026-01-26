@@ -15,6 +15,18 @@ Defaults:
 Requirements:
 - Go 1.25+ (required by `github.com/snissn/gomap`).
 
+View results in a browser (Streamlit dashboard):
+
+```bash
+./scripts/run_dashboard.sh ./results/<run-id>
+```
+
+Or automatically start the dashboard right after a run:
+
+```bash
+DASHBOARD=1 ./scripts/run_matrix.sh
+```
+
 Use a custom dataset:
 
 ```bash

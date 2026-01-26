@@ -10,6 +10,7 @@ DATA_DIR="${DATA_DIR:-$ROOT_DIR/data-$RUN_ID}"
 CHANGESET_DIR="${CHANGESET_DIR:-$ROOT_DIR/changesets-sample}"
 TARGET_VERSION="${TARGET_VERSION:-0}"
 DISABLE_BG="${DISABLE_BG:-0}"
+DASHBOARD="${DASHBOARD:-0}"
 
 if [[ ! -d "$CHANGESET_DIR" ]]; then
   echo "changeset dir not found: $CHANGESET_DIR" >&2
@@ -123,3 +124,13 @@ echo
 echo "Done."
 echo "results: $RESULTS_DIR"
 echo "data:    $DATA_DIR"
+
+if [[ "$DASHBOARD" == "1" ]]; then
+  echo
+  echo "Starting dashboard for $RESULTS_DIR..."
+  exec ./scripts/run_dashboard.sh "$RESULTS_DIR"
+fi
+
+echo
+echo "Dashboard:"
+echo "  ./scripts/run_dashboard.sh \"$RESULTS_DIR\""

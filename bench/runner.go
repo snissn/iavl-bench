@@ -3,6 +3,7 @@ package bench
 import (
 	"bufio"
 	"bytes"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -22,7 +23,7 @@ import (
 	"github.com/shirou/gopsutil/v4/host"
 	"github.com/shirou/gopsutil/v4/mem"
 	"github.com/spf13/cobra"
-	"google.golang.org/protobuf/encoding/protodelim"
+	"google.golang.org/protobuf/proto"
 )
 
 // Tree is a generic interface wrapping a multi-store tree structure.
@@ -73,6 +74,21 @@ func NewRunner(treeType string, cfg RunConfig) Runner {
 	var targetVersion int64
 	var logHandlerType string
 	var logFile string
+	var profileDir string
+	var profilePrefix string
+	var profileAll bool
+	var cpuProfile string
+	var memProfile string
+	var allocsProfile string
+	var blockProfile string
+	var mutexProfile string
+	var traceProfile string
+	var goroutineProfile string
+	var threadcreateProfile string
+	var memProfileRate int
+	var blockProfileRate int
+	var mutexProfileFraction int
+	var pprofHTTP string
 	cmd := &cobra.Command{
 		Use:   "bench",
 		Short: "Runs benchmarks for the tree implementation.",
@@ -83,6 +99,21 @@ func NewRunner(treeType string, cfg RunConfig) Runner {
 	cmd.Flags().Int64Var(&targetVersion, "target-version", 0, "Target version to apply changesets up to. If this is empty or 0, all remaining versions in the changeset-dir will be applied.")
 	cmd.Flags().StringVar(&logHandlerType, "log-type", "text", "Log handler type. One of 'text' or 'json'.")
 	cmd.Flags().StringVar(&logFile, "log-file", "", "If set, log output will be written to this file instead of stdout.")
+	cmd.Flags().StringVar(&profileDir, "profile-dir", "", "Write profile outputs into this directory (relative paths are joined to it).")
+	cmd.Flags().StringVar(&profilePrefix, "profile-prefix", "", "Optional prefix for default profile filenames when --profile-all is set.")
+	cmd.Flags().BoolVar(&profileAll, "profile-all", false, "Enable all common profiles with default filenames (requires --profile-dir or explicit paths).")
+	cmd.Flags().StringVar(&cpuProfile, "cpuprofile", "", "Write CPU profile to this file (pprof).")
+	cmd.Flags().StringVar(&memProfile, "memprofile", "", "Write heap profile to this file (pprof).")
+	cmd.Flags().StringVar(&allocsProfile, "allocsprofile", "", "Write allocs profile to this file (pprof).")
+	cmd.Flags().StringVar(&blockProfile, "blockprofile", "", "Write block profile to this file (pprof).")
+	cmd.Flags().StringVar(&mutexProfile, "mutexprofile", "", "Write mutex profile to this file (pprof).")
+	cmd.Flags().StringVar(&traceProfile, "trace", "", "Write runtime trace to this file.")
+	cmd.Flags().StringVar(&goroutineProfile, "goroutineprofile", "", "Write goroutine profile to this file (pprof).")
+	cmd.Flags().StringVar(&threadcreateProfile, "threadcreateprofile", "", "Write threadcreate profile to this file (pprof).")
+	cmd.Flags().IntVar(&memProfileRate, "memprofile-rate", 0, "If >0, set runtime.MemProfileRate (bytes per sample).")
+	cmd.Flags().IntVar(&blockProfileRate, "blockprofile-rate", 0, "If >0, enable block profiling with this sample rate (nanoseconds).")
+	cmd.Flags().IntVar(&mutexProfileFraction, "mutexprofile-fraction", 0, "If >0, enable mutex profiling with this fraction (1 records all).")
+	cmd.Flags().StringVar(&pprofHTTP, "pprof-http", "", "If set, serve net/http/pprof on this address (e.g. localhost:6060 or :0).")
 
 	cmd.RunE = func(cmd *cobra.Command, args []string) error {
 		if treeDir == "" {
@@ -157,6 +188,31 @@ func NewRunner(treeType string, cfg RunConfig) Runner {
 
 		logger := slog.New(handler).With("module", "runner")
 		treeLogger := slog.New(treeHandler)
+
+		prof, err := startProfiling(logger, profilingConfig{
+			ProfileDir:           profileDir,
+			ProfilePrefix:        profilePrefix,
+			ProfileAll:           profileAll,
+			CPUProfile:           cpuProfile,
+			MemProfile:           memProfile,
+			AllocsProfile:        allocsProfile,
+			BlockProfile:         blockProfile,
+			MutexProfile:         mutexProfile,
+			TraceProfile:         traceProfile,
+			GoroutineProfile:     goroutineProfile,
+			ThreadcreateProfile:  threadcreateProfile,
+			MemProfileRate:       memProfileRate,
+			BlockProfileRate:     blockProfileRate,
+			MutexProfileFraction: mutexProfileFraction,
+			PprofHTTP:            pprofHTTP,
+		})
+		if err != nil {
+			return err
+		}
+		if prof != nil {
+			defer func() { _ = prof.stop(logger) }()
+		}
+
 		logger.Info("Starting benchmark run, loading tree")
 
 		loaderParams := LoaderParams{
@@ -305,6 +361,41 @@ func captureSystemInfo(logger *slog.Logger) {
 	_, _ = cpu.Percent(0, true)
 }
 
+func readDelimitedKVPair(reader *bufio.Reader, kv *storev1beta1.StoreKVPair, buf *[]byte) error {
+	size, err := binary.ReadUvarint(reader)
+	if err != nil {
+		return err
+	}
+	maxInt := int(^uint(0) >> 1)
+	if size > uint64(maxInt) {
+		return fmt.Errorf("changeset entry too large: %d", size)
+	}
+	if size == 0 {
+		kv.StoreKey = ""
+		kv.Delete = false
+		kv.Key = kv.Key[:0]
+		kv.Value = kv.Value[:0]
+		return nil
+	}
+	b := *buf
+	if cap(b) < int(size) {
+		b = make([]byte, int(size))
+	} else {
+		b = b[:int(size)]
+	}
+	if _, err := io.ReadFull(reader, b); err != nil {
+		return err
+	}
+	kv.StoreKey = ""
+	kv.Delete = false
+	kv.Key = kv.Key[:0]
+	kv.Value = kv.Value[:0]
+	if err := (proto.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(b, kv); err != nil {
+		return err
+	}
+	*buf = b
+	return nil
+}
 func applyVersion(logger *slog.Logger, tree Tree, changesetDir string, version int64) error {
 	dataFilename := changesetDataFilename(changesetDir, version)
 	dataFile, err := os.Open(dataFilename)
@@ -322,12 +413,13 @@ func applyVersion(logger *slog.Logger, tree Tree, changesetDir string, version i
 	logger.Info("applying changeset", "version", version, "file", dataFilename)
 	i := 0
 	startTime := time.Now()
+	var buf []byte
 	for {
 		if i%10_000 == 0 && i > 0 {
 			logger.Debug("applied changes", "version", version, "count", i)
 		}
-		var storeKVPair storev1beta1.StoreKVPair
-		err := protodelim.UnmarshalFrom(reader, &storeKVPair)
+		storeKVPair := storev1beta1.StoreKVPair{}
+		err := readDelimitedKVPair(reader, &storeKVPair, &buf)
 		if err != nil {
 			if err == io.EOF {
 				break

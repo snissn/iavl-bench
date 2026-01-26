@@ -28,13 +28,15 @@ func main() {
 		Args:  cobra.ExactArgs(1),
 	}
 	cmd.Flags().Int64Var(&versions, "versions", 100, "number of versions to generate")
-	cmd.Flags().StringVar(&profile, "profile", "mixed", "data generation profile to use (mixed|osmo); default is small")
+	cmd.Flags().StringVar(&profile, "profile", "mixed", "data generation profile to use (mixed|sample|osmo)")
 	cmd.Flags().Float64Var(&scale, "scale", 1.0, "float64 scale factor for the profile; default is 1.0")
 	cmd.RunE = func(cmd *cobra.Command, args []string) error {
 		var gens []bench.StoreParams
 		switch profile {
 		case "mixed":
 			gens = MixedGenerators(versions, scale)
+		case "sample":
+			gens = bench.SampleGenerators(versions, scale)
 		case "osmo":
 			gens = bench.OsmoLikeGenerators(scale)
 		default:

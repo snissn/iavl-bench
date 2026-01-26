@@ -62,3 +62,74 @@ func OsmoLikeGenerators(scale float64) []StoreParams {
 		bankGen2,
 	}
 }
+
+func SampleGenerators(versions int64, scale float64) []StoreParams {
+	if versions <= 0 {
+		versions = 20
+	}
+	if scale <= 0 {
+		scale = 1
+	}
+
+	v := int(versions)
+	if v < 1 {
+		v = 1
+	}
+
+	initialSize := int(200 * scale)
+	if initialSize < 10 {
+		initialSize = 10
+	}
+
+	bankChanges := int(50 * scale)
+	if bankChanges < 1 {
+		bankChanges = 1
+	}
+	stakingChanges := int(10 * scale)
+	if stakingChanges < 1 {
+		stakingChanges = 1
+	}
+	lockupChanges := int(10 * scale)
+	if lockupChanges < 1 {
+		lockupChanges = 1
+	}
+
+	return []StoreParams{
+		{
+			StoreKey:         "bank",
+			KeyMean:          56,
+			KeyStdDev:        3,
+			ValueMean:        100,
+			ValueStdDev:      1200,
+			InitialSize:      initialSize,
+			FinalSize:        initialSize + bankChanges*v,
+			Versions:         versions,
+			ChangePerVersion: bankChanges,
+			DeleteFraction:   0.25,
+		},
+		{
+			StoreKey:         "staking",
+			KeyMean:          24,
+			KeyStdDev:        2,
+			ValueMean:        12_263,
+			ValueStdDev:      22_967,
+			InitialSize:      initialSize,
+			FinalSize:        initialSize + stakingChanges*v,
+			Versions:         versions,
+			ChangePerVersion: stakingChanges,
+			DeleteFraction:   0.25,
+		},
+		{
+			StoreKey:         "lockup",
+			KeyMean:          56,
+			KeyStdDev:        3,
+			ValueMean:        1_936,
+			ValueStdDev:      29_261,
+			InitialSize:      initialSize,
+			FinalSize:        initialSize + lockupChanges*v,
+			Versions:         versions,
+			ChangePerVersion: lockupChanges,
+			DeleteFraction:   0.29,
+		},
+	}
+}

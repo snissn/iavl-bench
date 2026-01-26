@@ -5,3 +5,14 @@ bench/run-*/
 .ipynb_checkpoints
 analysis/.ipynb_checkpoints
 analysis/__pycache__/
+
+# generated benchmark data
+data-*/
+results*/
+
+# local benchmark binaries
+**/*-bench*
+
+# locally generated large datasets (keep `changesets-sample/` tracked)
+changesets/
+changesets-sample-tmp*/

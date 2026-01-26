@@ -1,5 +1,36 @@
 # IAVL Bench
-iavl-bench contains a set of benchmarks for the IAVL tree implementation in [cosmos/iavl](https://github..com/cosmos/iavl).  This was originally compiled for the CosmosSDK storage v2 working group on Aug 2, 2023.
+iavl-bench contains a set of benchmarks for the IAVL tree implementation in [cosmos/iavl](https://github.com/cosmos/iavl). This was originally compiled for the CosmosSDK storage v2 working group on Aug 2, 2023.
+
+## TreeDB quick start
+This fork adds a TreeDB-backed IAVL v1 benchmark (`treedb-v1/`) and a single public entrypoint:
+
+```bash
+./scripts/run_matrix.sh
+```
+
+Defaults:
+- Uses the small checked-in dataset in `changesets-sample/`.
+- Runs: `iavl-v1` (leveldb), `iavl-v1-memdb`, `treedb-v1` **mode4** (WAL off, fast/unsafe), `treedb-v1` **mode3** (WAL on, durable-ish).
+
+Requirements:
+- Go 1.25+ (required by `github.com/snissn/gomap`).
+
+Use a custom dataset:
+
+```bash
+CHANGESET_DIR=./changesets ./scripts/run_matrix.sh
+```
+
+Optional TreeDB experiment toggles (apply to both mode3/mode4 unless you set per-run):
+- `TREEDB_SLAB_COMPRESSION=none|zstd`
+- `TREEDB_LEAF_PREFIX_COMPRESSION=0|1`
+- `TREEDB_BENCH_VLOG_DICT_TRAIN_BYTES=-1|0|N`
+
+Generate the sample dataset again:
+
+```bash
+(cd bench && go run ./cmd/gen-changesets/main.go --profile sample --versions 20 --scale 1 ../changesets-sample)
+```
 
 ## About the data set
 It has been said that "a benchmark is only as good as the input data" and great care has been taken to 

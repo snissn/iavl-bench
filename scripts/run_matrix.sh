@@ -35,6 +35,7 @@ run_iavl_v1_leveldb() {
   local log_file="$RESULTS_DIR/iavl-v1-leveldb.jsonl"
   echo
   echo "=== iavl/v1 (leveldb) ==="
+  mkdir -p "$db_dir"
   ./iavl-v1/iavl-v1-bench bench \
     --db-dir "$db_dir" \
     --changeset-dir "$CHANGESET_DIR" \
@@ -48,6 +49,7 @@ run_iavl_v1_memdb() {
   local log_file="$RESULTS_DIR/iavl-v1-memdb.jsonl"
   echo
   echo "=== iavl/v1 (memdb) ==="
+  mkdir -p "$db_dir"
   ./iavl-v1-memdb/iavl-v1-memdb-bench bench \
     --db-dir "$db_dir" \
     --changeset-dir "$CHANGESET_DIR" \
@@ -61,9 +63,11 @@ run_treedb_v1() {
   shift
   local db_dir="$DATA_DIR/treedb-v1-$name"
   local log_file="$RESULTS_DIR/treedb-v1-$name.jsonl"
+  mkdir -p "$db_dir"
 
   # Optional experiment toggles (apply to both mode3/mode4 unless you override).
-  local extra_env=()
+  local -a extra_env
+  extra_env=()
   if [[ -n "${TREEDB_SLAB_COMPRESSION:-}" ]]; then
     extra_env+=("TREEDB_SLAB_COMPRESSION=${TREEDB_SLAB_COMPRESSION}")
   fi
@@ -79,7 +83,7 @@ run_treedb_v1() {
   env \
     TREEDB_BENCH_MODE="${TREEDB_BENCH_MODE:-cached}" \
     TREEDB_BENCH_DISABLE_BG="$DISABLE_BG" \
-    "${extra_env[@]}" \
+    ${extra_env[@]+"${extra_env[@]}"} \
     "$@" \
     ./treedb-v1/treedb-v1-bench bench \
       --db-dir "$db_dir" \

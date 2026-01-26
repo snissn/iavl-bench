@@ -15,4 +15,5 @@ results*/
 
 # locally generated large datasets (keep `changesets-sample/` tracked)
 changesets/
+changesets-dev/
 changesets-sample-tmp*/

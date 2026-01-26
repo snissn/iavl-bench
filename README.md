@@ -15,6 +15,31 @@ Defaults:
 Requirements:
 - Go 1.25+ (required by `github.com/snissn/gomap`).
 
+Datasets:
+- **Fast sanity (default):** use the small checked-in dataset:
+
+```bash
+DATASET=sample ./scripts/run_matrix.sh
+```
+
+- **Longer runs:** generate a local dataset (not committed) and run mode4 + baselines. By default, mode3 is skipped on generated datasets.
+
+```bash
+DATASET=dev ./scripts/run_matrix.sh
+```
+
+Control generation:
+- `GEN_PROFILE` (default `sample`)
+- `GEN_VERSIONS` (default `200`)
+- `GEN_SCALE` (default `10`)
+- `REGEN=1` to regenerate from scratch
+
+Force WAL-on (mode3) on generated datasets (may fail; considered more experimental):
+
+```bash
+DATASET=dev INCLUDE_MODE3=1 ./scripts/run_matrix.sh
+```
+
 View results in a browser (Streamlit dashboard):
 
 ```bash

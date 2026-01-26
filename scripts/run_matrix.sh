@@ -7,23 +7,71 @@ cd "$ROOT_DIR"
 RUN_ID="${RUN_ID:-$(date +%Y%m%d-%H%M%S)}"
 RESULTS_DIR="${RESULTS_DIR:-$ROOT_DIR/results/$RUN_ID}"
 DATA_DIR="${DATA_DIR:-$ROOT_DIR/data-$RUN_ID}"
-CHANGESET_DIR="${CHANGESET_DIR:-$ROOT_DIR/changesets-sample}"
+DATASET="${DATASET:-sample}" # sample (checked-in), dev (generated), or custom (via CHANGESET_DIR)
+CHANGESET_DIR="${CHANGESET_DIR:-}"
 TARGET_VERSION="${TARGET_VERSION:-0}"
 DISABLE_BG="${DISABLE_BG:-0}"
 DASHBOARD="${DASHBOARD:-0}"
+INCLUDE_MODE3="${INCLUDE_MODE3:-}"
 
-if [[ ! -d "$CHANGESET_DIR" ]]; then
-  echo "changeset dir not found: $CHANGESET_DIR" >&2
-  echo "tip: set CHANGESET_DIR=... or generate sample changesets with:" >&2
-  echo "  (cd bench && go run ./cmd/gen-changesets/main.go --profile sample --versions 20 --scale 1 ../changesets-sample)" >&2
-  exit 1
+GEN_PROFILE="${GEN_PROFILE:-sample}"
+GEN_VERSIONS="${GEN_VERSIONS:-200}"
+GEN_SCALE="${GEN_SCALE:-10}"
+REGEN="${REGEN:-0}"
+
+if [[ -z "$CHANGESET_DIR" ]]; then
+  case "$DATASET" in
+  sample)
+    CHANGESET_DIR="$ROOT_DIR/changesets-sample"
+    ;;
+  dev)
+    CHANGESET_DIR="$ROOT_DIR/changesets-dev"
+    ;;
+  *)
+    echo "unknown DATASET=$DATASET (use DATASET=dev|sample or set CHANGESET_DIR=...)" >&2
+    exit 1
+    ;;
+  esac
 fi
+
+if [[ -z "$INCLUDE_MODE3" ]]; then
+  if [[ "$DATASET" == "sample" ]]; then
+    INCLUDE_MODE3=1
+  else
+    INCLUDE_MODE3=0
+  fi
+fi
+
+maybe_generate_changesets() {
+  if [[ "$DATASET" != "dev" ]]; then
+    return 0
+  fi
+
+  if [[ "$REGEN" == "1" && -d "$CHANGESET_DIR" ]]; then
+    rm -rf "$CHANGESET_DIR"
+  fi
+
+  if [[ -d "$CHANGESET_DIR" ]]; then
+    return 0
+  fi
+
+  echo "Generating changesets (DATASET=$DATASET) into $CHANGESET_DIR..."
+  (cd bench && go run ./cmd/gen-changesets/main.go --profile "$GEN_PROFILE" --versions "$GEN_VERSIONS" --scale "$GEN_SCALE" "$CHANGESET_DIR")
+}
 
 mkdir -p "$RESULTS_DIR" "$DATA_DIR"
 
 target_args=()
 if [[ "$TARGET_VERSION" != "0" ]]; then
   target_args=(--target-version "$TARGET_VERSION")
+fi
+
+maybe_generate_changesets
+
+if [[ ! -d "$CHANGESET_DIR" ]]; then
+  echo "changeset dir not found: $CHANGESET_DIR" >&2
+  echo "tip: set CHANGESET_DIR=... or use DATASET=sample for the small checked-in dataset" >&2
+  exit 1
 fi
 
 echo "Building benches..."
@@ -107,15 +155,21 @@ run_treedb_v1 mode4-wal-off \
   TREEDB_BENCH_DISABLE_READ_CHECKSUM=1 \
   TREEDB_BENCH_ALLOW_UNSAFE=1
 
-run_treedb_v1 mode3-wal-on \
-  TREEDB_BENCH_PROFILE=durable \
-  TREEDB_BENCH_DISABLE_WAL=0 \
-  TREEDB_BENCH_DISABLE_JOURNAL=0 \
-  TREEDB_BENCH_DISABLE_VALUE_LOG=0 \
-  TREEDB_BENCH_IAVL_SYNC=1 \
-  TREEDB_BENCH_RELAXED_SYNC=0 \
-  TREEDB_BENCH_DISABLE_READ_CHECKSUM=0 \
-  TREEDB_BENCH_ALLOW_UNSAFE=0
+if [[ "$INCLUDE_MODE3" == "1" ]]; then
+  run_treedb_v1 mode3-wal-on \
+    TREEDB_BENCH_PROFILE=durable \
+    TREEDB_BENCH_DISABLE_WAL=0 \
+    TREEDB_BENCH_DISABLE_JOURNAL=0 \
+    TREEDB_BENCH_DISABLE_VALUE_LOG=0 \
+    TREEDB_BENCH_IAVL_SYNC=1 \
+    TREEDB_BENCH_RELAXED_SYNC=0 \
+    TREEDB_BENCH_DISABLE_READ_CHECKSUM=0 \
+    TREEDB_BENCH_ALLOW_UNSAFE=0
+else
+  echo
+  echo "=== treedb/v1 (mode3-wal-on) ==="
+  echo "skipped (set INCLUDE_MODE3=1 to run; WAL-on is more experimental and may fail on larger datasets)"
+fi
 
 run_iavl_v1_leveldb
 run_iavl_v1_memdb

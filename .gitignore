@@ -17,3 +17,6 @@ results*/
 changesets/
 changesets-dev/
 changesets-sample-tmp*/
+
+# local scratch dirs
+iavl-patched/

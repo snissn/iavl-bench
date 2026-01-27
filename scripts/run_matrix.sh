@@ -139,8 +139,8 @@ run_treedb_v1() {
 }
 
 # Baselines:
-# - mode4: WAL off throughput (unsafe)
-# - mode3: WAL on, strict sync + checksums (durable-ish)
+# - mode4: journal/WAL off throughput (unsafe)
+# - mode3: journal/WAL on, strict sync + checksums (durable-ish)
 run_treedb_v1 mode4-wal-off \
   TREEDB_BENCH_PROFILE=fast \
   TREEDB_BENCH_DISABLE_WAL=1 \
@@ -180,3 +180,4 @@ fi
 echo
 echo "Dashboard:"
 echo "  ./scripts/run_dashboard.sh \"$RESULTS_DIR\""
+echo "tip: next time you can auto-start it via: DASHBOARD=1 ./scripts/run_matrix.sh"

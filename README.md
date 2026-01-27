@@ -10,7 +10,8 @@ This fork adds a TreeDB-backed IAVL v1 benchmark (`treedb-v1/`) and a single pub
 
 Defaults:
 - Uses the small checked-in dataset in `changesets-sample/`.
-- Runs: `iavl-v1` (leveldb), `iavl-v1-memdb`, `treedb-v1` **mode4** (WAL off, fast/unsafe), `treedb-v1` **mode3** (WAL on, durable-ish).
+- Runs: `iavl-v1` (leveldb), `iavl-v1-memdb`, `treedb-v1` **mode4** (journal/WAL off, fast/unsafe), `treedb-v1` **mode3** (journal/WAL on, durable-ish).
+- TreeDB uses a value log; the supported durability toggle is journal/WAL on/off.
 
 Requirements:
 - Go 1.25+ (required by `github.com/snissn/gomap`).

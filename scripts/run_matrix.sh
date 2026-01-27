@@ -117,9 +117,6 @@ run_treedb_v1() {
   # Optional experiment toggles (apply to both mode3/mode4 unless you override).
   local -a extra_env
   extra_env=()
-  if [[ -n "${TREEDB_SLAB_COMPRESSION:-}" ]]; then
-    extra_env+=("TREEDB_SLAB_COMPRESSION=${TREEDB_SLAB_COMPRESSION}")
-  fi
   if [[ -n "${TREEDB_LEAF_PREFIX_COMPRESSION:-}" ]]; then
     extra_env+=("TREEDB_LEAF_PREFIX_COMPRESSION=${TREEDB_LEAF_PREFIX_COMPRESSION}")
   fi
@@ -130,7 +127,6 @@ run_treedb_v1() {
   echo
   echo "=== treedb/v1 (${name}) ==="
   env \
-    TREEDB_BENCH_MODE="${TREEDB_BENCH_MODE:-cached}" \
     TREEDB_BENCH_DISABLE_BG="$DISABLE_BG" \
     ${extra_env[@]+"${extra_env[@]}"} \
     "$@" \
@@ -147,9 +143,7 @@ run_treedb_v1() {
 # - mode3: WAL on, strict sync + checksums (durable-ish)
 run_treedb_v1 mode4-wal-off \
   TREEDB_BENCH_PROFILE=fast \
-  TREEDB_BENCH_DISABLE_WAL=0 \
-  TREEDB_BENCH_DISABLE_JOURNAL=1 \
-  TREEDB_BENCH_DISABLE_VALUE_LOG=0 \
+  TREEDB_BENCH_DISABLE_WAL=1 \
   TREEDB_BENCH_IAVL_SYNC=0 \
   TREEDB_BENCH_RELAXED_SYNC=1 \
   TREEDB_BENCH_DISABLE_READ_CHECKSUM=1 \
@@ -159,8 +153,6 @@ if [[ "$INCLUDE_MODE3" == "1" ]]; then
   run_treedb_v1 mode3-wal-on \
     TREEDB_BENCH_PROFILE=durable \
     TREEDB_BENCH_DISABLE_WAL=0 \
-    TREEDB_BENCH_DISABLE_JOURNAL=0 \
-    TREEDB_BENCH_DISABLE_VALUE_LOG=0 \
     TREEDB_BENCH_IAVL_SYNC=1 \
     TREEDB_BENCH_RELAXED_SYNC=0 \
     TREEDB_BENCH_DISABLE_READ_CHECKSUM=0 \

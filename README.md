@@ -59,7 +59,6 @@ CHANGESET_DIR=./changesets ./scripts/run_matrix.sh
 ```
 
 Optional TreeDB experiment toggles (apply to both mode3/mode4 unless you set per-run):
-- `TREEDB_SLAB_COMPRESSION=none|zstd`
 - `TREEDB_LEAF_PREFIX_COMPRESSION=0|1`
 - `TREEDB_BENCH_VLOG_DICT_TRAIN_BYTES=-1|0|N`
 

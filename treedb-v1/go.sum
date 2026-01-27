@@ -111,8 +111,8 @@ github.com/shirou/gopsutil/v4 v4.25.7 h1:bNb2JuqKuAu3tRlPv5piSmBZyMfecwQ+t/ILq+1
 github.com/shirou/gopsutil/v4 v4.25.7/go.mod h1:XV/egmwJtd3ZQjBpJVY5kndsiOO4IRqy9TQnmm6VP7U=
 github.com/snissn/compress v1.18.2-snissn.0.0.20260122022318-7ad45194ecdc h1:satXM/pHV6NtkLPXJqfDVB3s1bGtTtsyiVrtRALnqGQ=
 github.com/snissn/compress v1.18.2-snissn.0.0.20260122022318-7ad45194ecdc/go.mod h1:p4xiZN07JMUF5xuybNGkG+pozT12MAblxCx36z+PIYM=
-github.com/snissn/gomap v0.2.1-0.20260125180153-da9a0f47123b h1:UQxrmLA0cjAGK5u5CrFJb47uF6XWtbmhUoZK1cnVG4M=
-github.com/snissn/gomap v0.2.1-0.20260125180153-da9a0f47123b/go.mod h1:yRQuXxAgNXSPT0sIgrNl6H5J+FQ7CulEdFu6UGJZpxI=
+github.com/snissn/gomap v0.2.1-0.20260127004633-7b8e9cded518 h1:tlFMhMA+6f/YeQ4ojbWcJZTI3Ht4WNx8OzVKXk1Di/4=
+github.com/snissn/gomap v0.2.1-0.20260127004633-7b8e9cded518/go.mod h1:yRQuXxAgNXSPT0sIgrNl6H5J+FQ7CulEdFu6UGJZpxI=
 github.com/spf13/cobra v1.7.0 h1:hyqWnYt1ZQShIddO5kBpj3vu05/++x6tJ6dg8EC572I=
 github.com/spf13/cobra v1.7.0/go.mod h1:uLxZILRyS/50WlhOIKD7W6V5bgeIt+4sICxh6uRMrb0=
 github.com/spf13/pflag v1.0.5 h1:iy+VFUOCP1a+8yFto/drg2CJ5u0yRoB7fZw3DKv/JXA=

@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"reflect"
 	"strconv"
 	"strings"
 	"sync"
@@ -16,8 +15,6 @@ import (
 
 	corestore "cosmossdk.io/core/store"
 	treedb "github.com/snissn/gomap/TreeDB"
-	"github.com/snissn/gomap/TreeDB/slab"
-	"github.com/snissn/gomap/TreeDB/tree"
 	"github.com/snissn/gomap/kvstore"
 	treedbadapter "github.com/snissn/gomap/kvstore/adapters/treedb"
 )
@@ -26,20 +23,14 @@ const memtableMode = "adaptive"
 
 const (
 	envDisableWAL          = "TREEDB_BENCH_DISABLE_WAL"
-	envDisableJournal      = "TREEDB_BENCH_DISABLE_JOURNAL"
 	envDisableBG           = "TREEDB_BENCH_DISABLE_BG"
 	envRelaxedSync         = "TREEDB_BENCH_RELAXED_SYNC"
-	envDisableValueLog     = "TREEDB_BENCH_DISABLE_VALUE_LOG"
-	envSplitValueLog       = "TREEDB_BENCH_SPLIT_VALUE_LOG"
-	envMemtableVlogPtrs    = "TREEDB_BENCH_MEMTABLE_VALUE_LOG_POINTERS"
 	envDisableReadChecksum = "TREEDB_BENCH_DISABLE_READ_CHECKSUM"
 	envAllowUnsafe         = "TREEDB_BENCH_ALLOW_UNSAFE"
 	envVlogDictTrainBytes  = "TREEDB_BENCH_VLOG_DICT_TRAIN_BYTES"
-	envMode                = "TREEDB_BENCH_MODE"
 	envPinSnapshot         = "TREEDB_BENCH_PIN_SNAPSHOT"
 	envProfile             = "TREEDB_BENCH_PROFILE"
 	envReuseReads          = "TREEDB_BENCH_REUSE_READS"
-	envSlabCompression     = "TREEDB_SLAB_COMPRESSION"
 	envLeafPrefix          = "TREEDB_LEAF_PREFIX_COMPRESSION"
 	envForcePointers       = "TREEDB_FORCE_VALUE_POINTERS"
 	envJournalLanes        = "TREEDB_JOURNAL_LANES"
@@ -152,39 +143,6 @@ func envString(name string, defaultValue string) string {
 	return v
 }
 
-func setBoolOption(opts *treedb.Options, name string, value bool) {
-	v := reflect.ValueOf(opts).Elem()
-	field := v.FieldByName(name)
-	if !field.IsValid() || !field.CanSet() || field.Kind() != reflect.Bool {
-		return
-	}
-	field.SetBool(value)
-}
-
-func setIntOption(opts *treedb.Options, name string, value int) {
-	v := reflect.ValueOf(opts).Elem()
-	field := v.FieldByName(name)
-	if !field.IsValid() || !field.CanSet() || field.Kind() != reflect.Int {
-		return
-	}
-	field.SetInt(int64(value))
-}
-
-func parseSlabCompression(value string) slab.CompressionOptions {
-	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "zstd", "zstandard":
-		return slab.CompressionOptions{Kind: slab.CompressionZSTD}
-	case "none", "off", "":
-		return slab.CompressionOptions{Kind: slab.CompressionNone}
-	default:
-		return slab.CompressionOptions{Kind: slab.CompressionNone}
-	}
-}
-
-func setAllowUnsafe(opts *treedb.Options, allow bool) {
-	setBoolOption(opts, "AllowUnsafe", allow)
-}
-
 func applyProfile(opts *treedb.Options, profile string) {
 	switch strings.ToLower(strings.TrimSpace(profile)) {
 	case "durable":
@@ -203,54 +161,38 @@ func NewTreeDBAdapter(dir string, name string) (*TreeDBAdapter, error) {
 	}
 
 	disableWAL := envBool(envDisableWAL, false)
-	disableJournal := envBool(envDisableJournal, false)
 	disableBG := envBool(envDisableBG, false)
 	pinSnapshot := envBool(envPinSnapshot, false)
 	reuseReads := envBool(envReuseReads, false)
 	relaxedSync := envBool(envRelaxedSync, false)
-	disableValueLog := envBool(envDisableValueLog, false)
-	splitValueLog := envBool(envSplitValueLog, false)
-	memtableVlogPtrs := envBool(envMemtableVlogPtrs, false)
 	disableReadChecksum := envBool(envDisableReadChecksum, false)
 	verifyOnRead := envBool(envVerifyOnRead, false)
 	_, leafPrefixSet := os.LookupEnv(envLeafPrefix)
 	_, forcePointersSet := os.LookupEnv(envForcePointers)
-	slabCompression, slabCompressionSet := os.LookupEnv(envSlabCompression)
 	journalLanes := int(envInt64(envJournalLanes, 0))
 	indexColumnar := envBool(envIndexColumnarLeaves, false)
 	indexBaseDelta := envBool(envIndexBaseDelta, false)
 	_, allowUnsafeSet := os.LookupEnv(envAllowUnsafe)
 	allowUnsafe := envBool(envAllowUnsafe, false)
-	if !allowUnsafeSet && (disableWAL || disableJournal || relaxedSync || disableReadChecksum) {
+	if !allowUnsafeSet && (disableWAL || relaxedSync || disableReadChecksum) {
 		allowUnsafe = true
-	}
-
-	mode := treedb.ModeCached
-	switch strings.ToLower(envString(envMode, "cached")) {
-	case "backend", "raw", "uncached":
-		mode = treedb.ModeBackend
 	}
 
 	openOpts := treedb.Options{
 		Dir:          dbPath,
-		Mode:         mode,
 		MemtableMode: memtableMode,
 	}
-	openOpts.VerifyOnRead = verifyOnRead
-
 	applyProfile(&openOpts, envString(envProfile, ""))
+	openOpts.VerifyOnRead = verifyOnRead
 	if _, ok := os.LookupEnv(envVlogDictTrainBytes); ok {
 		openOpts.ValueLogDictTrain.TrainBytes = int(envInt64(envVlogDictTrainBytes, 0))
 	}
 
 	// --- "Unsafe" Performance Options ---
 	openOpts.DisableWAL = disableWAL
-	openOpts.DisableValueLog = disableValueLog
 	openOpts.RelaxedSync = relaxedSync
 	openOpts.DisableReadChecksum = disableReadChecksum
-	setBoolOption(&openOpts, "DisableJournal", disableJournal)
-	setBoolOption(&openOpts, "SplitValueLog", splitValueLog)
-	setBoolOption(&openOpts, "MemtableValueLogPointers", memtableVlogPtrs)
+	openOpts.AllowUnsafe = allowUnsafe
 
 	// --- Tuning for High-Throughput & Large Values ---
 	openOpts.FlushThreshold = 64 * 1024 * 1024
@@ -265,17 +207,11 @@ func NewTreeDBAdapter(dir string, name string) (*TreeDBAdapter, error) {
 	if forcePointersSet {
 		openOpts.ForceValuePointers = envBool(envForcePointers, false)
 	}
-	if slabCompressionSet {
-		openOpts.SlabCompression = parseSlabCompression(slabCompression)
+	if journalLanes > 0 {
+		openOpts.JournalLanes = journalLanes
 	}
-	setIntOption(&openOpts, "JournalLanes", journalLanes)
-	setBoolOption(&openOpts, "IndexColumnarLeaves", indexColumnar)
-	setBoolOption(&openOpts, "IndexInternalBaseDelta", indexBaseDelta)
-
-	// Add Value Log Compaction
-	//openOpts.BackgroundCompactionInterval = 1 * time.Second
-	//openOpts.BackgroundCompactionDeadRatio = 0.1
-	setAllowUnsafe(&openOpts, allowUnsafe)
+	openOpts.IndexColumnarLeaves = indexColumnar
+	openOpts.IndexInternalBaseDelta = indexBaseDelta
 
 	if disableBG {
 		// Background tasks can dominate profile lock/wait time and obscure the
@@ -320,7 +256,7 @@ func (d *TreeDBAdapter) Get(key []byte) ([]byte, error) {
 	if d.snap != nil {
 		val, err := d.snap.GetUnsafe(key)
 		if err != nil {
-			if errors.Is(err, tree.ErrKeyNotFound) {
+			if errors.Is(err, treedb.ErrKeyNotFound) {
 				return nil, nil
 			}
 			return nil, err
@@ -333,7 +269,7 @@ func (d *TreeDBAdapter) Get(key []byte) ([]byte, error) {
 	if d.reuseReads {
 		val, err := d.db.GetAppend(key, d.readBuf[:0])
 		if err != nil {
-			if errors.Is(err, tree.ErrKeyNotFound) {
+			if errors.Is(err, treedb.ErrKeyNotFound) {
 				return nil, nil
 			}
 			return nil, err
